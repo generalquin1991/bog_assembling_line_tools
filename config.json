@@ -1,0 +1,21 @@
+{
+  "serial_port": "/dev/ttyUSB0",
+  "baud_rate": 2000000,
+  "chip_type": "esp32c2",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_6.bin",
+  "flash_mode": "dio",
+  "flash_freq": "40m",
+  "flash_size": "4MB",
+  "erase_flash": false,
+  "partition_table": null,
+  "bootloader": null,
+  "app_offset": "0x10000",
+  "verify": true,
+  "reset_after_flash": true,
+  "monitor_baud": 78400,
+  "hash_verification_timeout": 20,
+  "filter_serial_ports": true,
+  "serial_port_keywords": ["USB Serial", "Serial", "COM", "USB"],
+  "exclude_port_patterns": ["debug-console", "wlan-debug", "Bluetooth", "HUAWEI", "n/a"],
+  "version_string": "P2V2\r"
+}

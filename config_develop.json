@@ -1,0 +1,304 @@
+{
+  "mode": "develop",
+  "description": "开发模式 - 用于开发和调试，不加密",
+  "serial_port": "/dev/cu.wchusbserial210",
+  "chip_type": "esp32c2",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_6.bin",
+  "flash_mode": "dio",
+  "flash_freq": "60m",
+  "flash_size": "2MB",
+  "erase_flash": false,
+  "partition_table": null,
+  "bootloader": null,
+  "app_offset": "0x10000",
+  "verify": true,
+  "reset_after_flash": true,
+  "encrypt": false,
+  "secure_boot": false,
+  "version_string": "ASDASD",
+  "device_code_rule": "SN: YYMMDD+序号",
+  "hash_verification_timeout": 20,
+  "filter_serial_ports": true,
+  "serial_port_keywords": [
+    "USB Serial",
+    "Serial",
+    "COM",
+    "USB"
+  ],
+  "exclude_port_patterns": [
+    "debug-console",
+    "wlan-debug",
+    "Bluetooth",
+    "HUAWEI",
+    "n/a"
+  ],
+  "baud_rate": 921600,
+  "monitor_baud": 78400,
+  "procedures": [
+    {
+      "name": "development_mode_procedure",
+      "description": "开发模式流程 - 用于开发和调试",
+      "steps": [
+        {
+          "name": "check_uart",
+          "type": "check_uart",
+          "description": "环境确认 - 检查UART串口是否存在",
+          "timeout": 5,
+          "on_failure": "error"
+        },
+        {
+          "name": "check_encryption",
+          "type": "check_encryption",
+          "description": "确认器件是否加密 - 通过监控ESP日志实现",
+          "timeout": 2,
+          "log_patterns": {
+            "encrypted": [
+              "flash encryption is enabled",
+              "Flash encryption completed",
+              "Flash encryption mode is RELEASE"
+            ],
+            "not_encrypted": [
+              "flash encryption is not enabled",
+              "Checking flash encryption..."
+            ]
+          },
+          "on_failure": "error"
+        },
+        {
+          "name": "conditional_flash",
+          "type": "conditional",
+          "description": "条件判断 - 如果未加密则执行烧录，否则报错",
+          "condition": "not_encrypted",
+          "on_condition_true": [
+            {
+              "name": "flash_firmware",
+              "type": "flash_firmware",
+              "description": "执行固件烧录",
+              "timeout": 60,
+              "on_failure": "error"
+            }
+          ],
+          "on_condition_false": [
+            {
+              "name": "error_device_encrypted",
+              "type": "error",
+              "description": "设备已加密，开发模式不支持加密设备",
+              "message": "错误：设备已加密，无法在开发模式下烧录。请使用未加密的设备或切换到生产模式。",
+              "exit": true
+            }
+          ]
+        },
+        {
+          "name": "self_test",
+          "type": "self_test",
+          "description": "自测试流程",
+          "steps": [
+            {
+              "name": "reset_and_monitor",
+              "type": "reset_and_monitor",
+              "description": "复位设备，监控并记录日志",
+              "timeout": 1,
+              "auto_advance_on": {
+                "pattern": "Enter Hardware Version:",
+                "description": "检测到硬件版本输入提示，自动进入下一步",
+                "wait_for_button": true,
+                "button_prompt": "Press button to continue"
+              },
+              "log_patterns": {
+                "mac_address": [
+                  "MAC:",
+                  "mac:",
+                  "MAC Address:",
+                  "mac address:"
+                ],
+                "boot_complete": [
+                  "factory_config:",
+                  "Factory Configuration Mode",
+                  "Initializing RTC"
+                ],
+                "pressure_sensor": [
+                  "Pressure Sensor Reading:",
+                  "pressure sensor",
+                  "Pressure Sensor"
+                ],
+                "rtc_time": [
+                  "RTC Time now:",
+                  "RTC Time:",
+                  "RTC time",
+                  "Time passed:"
+                ],
+                "button_pressed": [
+                  "Press button to continue",
+                  "button pressed",
+                  "Button pressed",
+                  "button to continue"
+                ],
+                "hardware_version_prompt": [
+                  "Enter Hardware Version:",
+                  "Enter hardware version:",
+                  "Hardware Version:"
+                ]
+              },
+              "test_states": {
+                "factory_config_mode": {
+                  "patterns": [
+                    "Factory Configuration Mode",
+                    "factory_config:"
+                  ],
+                  "message": "📋 进入工厂配置模式"
+                },
+                "initializing_rtc": {
+                  "patterns": [
+                    "Initializing RTC",
+                    "setting time"
+                  ],
+                  "message": "⏰ 初始化RTC并设置时间"
+                },
+                "testing_pressure_sensor": {
+                  "patterns": [
+                    "Pressure Sensor Reading:",
+                    "Pressure Sensor"
+                  ],
+                  "message": "📊 测试压力传感器"
+                },
+                "testing_rtc": {
+                  "patterns": [
+                    "RTC Time now:",
+                    "Time passed:"
+                  ],
+                  "message": "⏱️  测试RTC时间"
+                },
+                "waiting_button": {
+                  "patterns": [
+                    "Press button to continue",
+                    "button to continue"
+                  ],
+                  "message": "🔘 等待按钮按下..."
+                },
+                "testing_leds": {
+                  "patterns": [
+                    "Toggling LEDs",
+                    "LEDs"
+                  ],
+                  "message": "💡 测试LED指示灯"
+                },
+                "testing_valve": {
+                  "patterns": [
+                    "Toggling Valve",
+                    "Valve"
+                  ],
+                  "message": "🔧 测试阀门"
+                },
+                "waiting_hardware_version": {
+                  "patterns": [
+                    "Enter Hardware Version:",
+                    "Hardware Version:"
+                  ],
+                  "message": "📝 等待输入硬件版本"
+                }
+              },
+              "extract_mac": true,
+              "extract_pressure": true,
+              "extract_rtc": true,
+              "monitor_button": true,
+              "on_failure": "warning"
+            },
+            {
+              "name": "print_monitored_info",
+              "type": "print_info",
+              "description": "打印监控到的信息（MAC地址、压力、RTC等）",
+              "info_types": [
+                "mac_address",
+                "pressure_sensor",
+                "rtc_time"
+              ],
+              "on_failure": "warning"
+            },
+            {
+              "name": "wait_for_hardware_version_prompt",
+              "type": "wait_for_prompt",
+              "description": "等待硬件版本输入提示（如果上一步已检测到，将自动跳过）",
+              "prompt_pattern": "Enter Hardware Version:",
+              "timeout": 5,
+              "skip_if_detected": true,
+              "test_states": {
+                "factory_config_mode": {
+                  "patterns": [
+                    "Factory Configuration Mode",
+                    "factory_config:"
+                  ],
+                  "message": "📋 进入工厂配置模式"
+                },
+                "initializing_rtc": {
+                  "patterns": [
+                    "Initializing RTC",
+                    "setting time"
+                  ],
+                  "message": "⏰ 初始化RTC并设置时间"
+                },
+                "testing_pressure_sensor": {
+                  "patterns": [
+                    "Pressure Sensor Reading:",
+                    "Pressure Sensor"
+                  ],
+                  "message": "📊 测试压力传感器"
+                },
+                "testing_rtc": {
+                  "patterns": [
+                    "RTC Time now:",
+                    "Time passed:"
+                  ],
+                  "message": "⏱️  测试RTC时间"
+                },
+                "waiting_button": {
+                  "patterns": [
+                    "Press button to continue",
+                    "button to continue"
+                  ],
+                  "message": "🔘 等待按钮按下..."
+                },
+                "testing_leds": {
+                  "patterns": [
+                    "Toggling LEDs",
+                    "LEDs"
+                  ],
+                  "message": "💡 测试LED指示灯"
+                },
+                "testing_valve": {
+                  "patterns": [
+                    "Toggling Valve",
+                    "Valve"
+                  ],
+                  "message": "🔧 测试阀门"
+                },
+                "waiting_hardware_version": {
+                  "patterns": [
+                    "Enter Hardware Version:",
+                    "Hardware Version:"
+                  ],
+                  "message": "📝 等待输入硬件版本"
+                }
+              },
+              "on_failure": "warning"
+            },
+            {
+              "name": "input_hardware_version",
+              "type": "interactive_input",
+              "description": "提示输入硬件版本，为空则从配置文件查找",
+              "prompt": "请输入硬件版本（留空则使用配置文件中的version_string）:",
+              "fallback_to_config": true,
+              "config_key": "version_string",
+              "config_files": [
+                "config_develop.json",
+                "config.json"
+              ],
+              "send_to_device": true,
+              "on_failure": "error"
+            }
+          ],
+          "on_failure": "warning"
+        }
+      ]
+    }
+  ]
+}
