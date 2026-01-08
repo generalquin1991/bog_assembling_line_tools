@@ -17,13 +17,104 @@ import csv
 import threading
 import time
 import re
+import platform
 from datetime import datetime
 from pathlib import Path
 
+# Import sound utilities
+try:
+    from sound_utils import play_notification_sound, play_completion_sound
+    SOUND_ENABLED = True
+except ImportError:
+    # If sound_utils is not available, define dummy functions
+    def play_notification_sound():
+        return False
+    def play_completion_sound():
+        return False
+    SOUND_ENABLED = False
+
+
+# 全局开关：控制是否打印设备日志（默认开启）
+PRINT_DEVICE_LOGS = True
+
+
+def ts_print(*args, **kwargs):
+    """
+    带时间戳的打印工具，仅用于"来自设备的日志行"。
+    格式示例：2026-01-07-15-38-01:010 <原始内容>
+    受 PRINT_DEVICE_LOGS 全局开关控制
+    """
+    if not PRINT_DEVICE_LOGS:
+        return  # 如果开关关闭，不打印
+    
+    # 生成毫秒精度时间戳
+    now = datetime.now()
+    ts = now.strftime("%Y-%m-%d-%H-%M-%S") + ":" + f"{int(now.microsecond / 1000):03d}"
+    prefix = f"{ts} "
+
+    sep = kwargs.pop("sep", " ")
+    print(prefix, *args, sep=sep, **kwargs)
+
 try:
     import inquirer
+    # Try to enable circular navigation for inquirer lists
+    # inquirer uses prompt_toolkit under the hood, which supports wrap_around
+    try:
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        # Check if we can patch inquirer to support circular navigation
+        _inquirer_available = True
+    except ImportError:
+        _inquirer_available = True  # inquirer is available, but prompt_toolkit patching may not work
 except ImportError:
     inquirer = None
+    _inquirer_available = False
+
+
+# 全局日志目录
+LOG_DIR = "logs"
+
+
+def ensure_log_directory():
+    """确保日志目录存在"""
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR, exist_ok=True)
+    return LOG_DIR
+
+
+def get_log_file_path(filename):
+    """获取日志文件的完整路径"""
+    ensure_log_directory()
+    return os.path.join(LOG_DIR, filename)
+
+
+def save_operation_history(operation_type, details, session_id=None):
+    """保存操作历史到日志目录"""
+    ensure_log_directory()
+    
+    if session_id is None:
+        session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    history_file = get_log_file_path(f"operation_history_{session_id}.txt")
+    
+    try:
+        file_exists = os.path.exists(history_file)
+        with open(history_file, 'a', encoding='utf-8') as f:
+            if not file_exists:
+                f.write(f"Operation History - Session: {session_id}\n")
+                f.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 80 + "\n\n")
+            
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            f.write(f"[{timestamp}] {operation_type}\n")
+            if details:
+                f.write(f"  {details}\n")
+            f.write("\n")
+            f.flush()
+        return history_file
+    except Exception as e:
+        print(f"  ⚠️  无法保存操作历史: {e}")
+        return None
 
 
 class RestartTUI(Exception):
@@ -53,15 +144,24 @@ class SerialMonitor:
         self.monitor_thread = None
         
     def open(self):
-        """打开串口连接"""
+        """打开串口连接（自动规范化设备路径，确保在 macOS 上使用 /dev/cu.*）"""
         try:
+            # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
+            normalized_port = normalize_serial_port(self.port)
+            if normalized_port != self.port:
+                print(f"  ℹ️  Using normalized serial port: {normalized_port} (converted from {self.port})")
+                self.port = normalized_port  # 更新为规范化后的路径
+            
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baud_rate,
-                timeout=1,
+                timeout=0.1,  # 减少超时时间，提高响应速度（像 ESP-IDF monitor）
                 write_timeout=1
             )
-            time.sleep(0.5)  # 等待串口稳定
+            # 清空输入输出缓冲区，确保从干净状态开始
+            self.serial_conn.reset_input_buffer()
+            self.serial_conn.reset_output_buffer()
+            time.sleep(0.1)  # 短暂等待串口稳定（减少等待时间，像 ESP-IDF monitor）
             return True
         except Exception as e:
             print(f"Error: Unable to open serial port {self.port}: {e}")
@@ -153,7 +253,7 @@ class SerialMonitor:
         
         while self.running and time.time() < timeout:
             try:
-                if self.serial_conn.in_waiting > 0:
+                if self.serial_conn.is_open and self.serial_conn.in_waiting > 0:
                     data = self.serial_conn.read(self.serial_conn.in_waiting)
                     text = data.decode('utf-8', errors='ignore')
                     self.buffer += text
@@ -163,7 +263,7 @@ class SerialMonitor:
                         line, self.buffer = self.buffer.split('\n', 1)
                         line = line.strip()
                         if line:
-                            print(f"[Device Log] {line}")
+                            ts_print(f"[Device Log] {line}")
                             
                             # Extract device information
                             self.extract_device_info(line)
@@ -199,7 +299,7 @@ class SerialMonitor:
                                     self.waiting_for_input = None
                                     self.input_sent = False
                 else:
-                    time.sleep(0.1)
+                    time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
             except Exception as e:
                 print(f"Monitoring error: {e}")
                 break
@@ -242,9 +342,41 @@ class SerialMonitor:
         return self.device_info.copy()
 
 
+def normalize_serial_port(port):
+    """规范化串口设备路径
+    
+    在 macOS 上，ESP-IDF monitor 使用 /dev/cu.* 而不是 /dev/tty.*
+    因为 /dev/tty.* 会导致 gdb 挂起。
+    这个函数会自动将 /dev/tty.* 转换为 /dev/cu.*（如果存在的话）
+    
+    Args:
+        port: 串口设备路径，如 /dev/tty.wchusbserial110 或 /dev/cu.wchusbserial110
+    
+    Returns:
+        规范化后的串口设备路径
+    """
+    if not port:
+        return port
+    
+    # 只在 macOS 上处理
+    if platform.system() != 'Darwin':
+        return port
+    
+    # 如果是 /dev/tty.*，尝试转换为 /dev/cu.*
+    if port.startswith('/dev/tty.'):
+        cu_port = port.replace('/dev/tty.', '/dev/cu.', 1)
+        if os.path.exists(cu_port):
+            return cu_port
+        # 如果 cu 版本不存在，返回原路径（可能设备只支持 tty）
+        return port
+    
+    return port
+
+
 def check_port_exists(port):
-    """检查串口是否存在"""
-    return os.path.exists(port)
+    """检查串口是否存在（支持自动转换 tty 到 cu）"""
+    normalized_port = normalize_serial_port(port)
+    return os.path.exists(normalized_port)
 
 
 def filter_serial_ports(ports, config=None):
@@ -299,7 +431,9 @@ def detect_esp_device(port, baud_rate=115200):
     """检测ESP设备是否连接（仅在必要时使用，会占用串口）"""
     ser = None
     try:
-        ser = serial.Serial(port, baud_rate, timeout=2)
+        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
+        normalized_port = normalize_serial_port(port)
+        ser = serial.Serial(normalized_port, baud_rate, timeout=2)
         time.sleep(0.5)
         
         # 尝试发送AT命令或检测芯片
@@ -324,6 +458,10 @@ def detect_esp_device(port, baud_rate=115200):
 
 def save_to_csv(device_info, csv_file='device_records.csv'):
     """保存设备信息到CSV文件"""
+    # 如果csv_file是相对路径，保存到日志目录
+    if not os.path.isabs(csv_file):
+        csv_file = get_log_file_path(csv_file)
+    
     file_exists = os.path.exists(csv_file)
     
     try:
@@ -359,6 +497,34 @@ class ESPFlasher:
         self.config_path = config_path
         self.config = self.load_config()
         self.validate_config()
+        # 创建会话ID用于关联所有日志
+        self.session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # 确保日志目录存在
+        ensure_log_directory()
+        # 创建统一的监控日志文件（所有步骤共享）
+        self.unified_log_file = None
+        self.unified_log_filepath = None
+        try:
+            log_filename = f"monitor_log_{self.session_id}.txt"
+            self.unified_log_filepath = get_log_file_path(log_filename)
+            self.unified_log_file = open(self.unified_log_filepath, 'w', encoding='utf-8')
+            self.unified_log_file.write(f"Unified Monitor Log - Session: {self.session_id}\n")
+            self.unified_log_file.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            self.unified_log_file.write(f"Config: {config_path}\n")
+            self.unified_log_file.write("=" * 80 + "\n\n")
+            self.unified_log_file.flush()
+        except Exception as e:
+            print(f"  ⚠️  Unable to create unified log file: {e}")
+            self.unified_log_file = None
+        
+        # 创建共享的串口监控实例（所有步骤共享，避免关闭和重新打开导致数据丢失）
+        self.shared_monitor = None
+        self.shared_monitor_port = None
+        self.shared_monitor_baud = None
+        # 记录初始化操作
+        save_operation_history("ESPFlasher Initialized", 
+                              f"Config: {config_path}, Session ID: {self.session_id}", 
+                              self.session_id)
     
     def load_config(self):
         """加载配置文件，如果波特率字段缺失则从config.json读取默认值"""
@@ -641,13 +807,19 @@ class ESPFlasher:
             print(f"执行命令: {' '.join(cmd_args)}")
             print("-" * 60)
             
-            # 创建日志文件（带时间戳）
-            log_filename = f"esptool_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            log_file = open(log_filename, 'w', encoding='utf-8')
-            log_file.write(f"ESP烧录日志 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log_file.write(f"执行命令: {' '.join(cmd_args)}\n")
-            log_file.write("=" * 80 + "\n\n")
-            print(f"📝 日志文件: {log_filename}\n")
+            # 使用统一的日志文件（如果存在）
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
+                unified_log_file.write(f"\n{'='*80}\n")
+                unified_log_file.write(f"ESP Flashing - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                unified_log_file.write(f"Command: {' '.join(cmd_args)}\n")
+                unified_log_file.write(f"{'='*80}\n\n")
+                unified_log_file.flush()
+            
+            # 记录操作历史
+            save_operation_history("Flash Firmware Started", 
+                                  f"Port: {port}, Firmware: {firmware_path}, Command: {' '.join(cmd_args)}", 
+                                  self.session_id)
             
             # 使用Popen实时读取输出
             process = subprocess.Popen(
@@ -894,9 +1066,11 @@ class ESPFlasher:
                     if not line and process.poll() is not None:
                         break
                     
-                    # 立即写入日志文件（包含原始换行符）
-                    log_file.write(line)
-                    log_file.flush()  # 确保立即写入
+                    # 立即写入统一日志文件（包含原始换行符）
+                    unified_log_file = getattr(self, 'unified_log_file', None)
+                    if unified_log_file:
+                        unified_log_file.write(line)
+                        unified_log_file.flush()  # 确保立即写入
                     
                     line = line.rstrip()
                     
@@ -1120,12 +1294,13 @@ class ESPFlasher:
                             process.kill()
                         except:
                             pass
-                # 关闭日志文件
-                if 'log_file' in locals() and log_file:
+                # 写入统一日志文件
+                unified_log_file = getattr(self, 'unified_log_file', None)
+                if unified_log_file:
                     try:
-                        log_file.write("\n" + "=" * 80 + "\n")
-                        log_file.write("用户中断烧录（Ctrl+C）\n")
-                        log_file.close()
+                        unified_log_file.write("\n" + "=" * 80 + "\n")
+                        unified_log_file.write("用户中断烧录（Ctrl+C）\n")
+                        unified_log_file.flush()
                     except:
                         pass
                 raise  # 重新抛出异常，让外层的 except KeyboardInterrupt 处理
@@ -1147,21 +1322,47 @@ class ESPFlasher:
                         print_progress_bar(100, bytes_written_known, final_total, newline=True)  # 直接换行
                     progress_line_active = False
             
-            # 关闭日志文件
-            log_file.write("\n" + "=" * 80 + "\n")
-            log_file.write(f"烧录结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log_file.close()
+            # 写入统一日志文件
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
+                unified_log_file.write("\n" + "=" * 80 + "\n")
+                unified_log_file.write(f"Flashing end time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                unified_log_file.flush()
+            
+            # 记录操作历史
+            save_operation_history("Flash Completed", 
+                                  f"Port: {port}, Firmware: {firmware_path}, Result: Success", 
+                                  self.session_id)
             
             # 获取返回码
             return_code = process.poll()
             
             if return_code == 0:
-                print("\n\n✓ 固件烧录成功!")
-                print(f"📝 完整日志已保存到: {log_filename}")
+                print("\n\n✓ Firmware flashing successful!")
+                if unified_log_file:
+                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 
-                # 如果需要，重置设备
-                if self.config.get('reset_after_flash', True):
-                    print("正在重置设备...")
+                # 烧录后不自动复位，由后续步骤处理
+                # 如果在procedures流程中，立即切换到监控波特率并开始监控
+                if hasattr(self, 'procedure_state') and self.procedure_state is not None:
+                    monitor_baud = self.config.get('monitor_baud')
+                    if not monitor_baud:
+                        raise ValueError("monitor_baud not configured in config file")
+                    print(f"\n  → 烧录完成，切换到监控波特率 {monitor_baud} 并开始监控...")
+                    if unified_log_file:
+                        unified_log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Flash completed, switching to monitor baud rate {monitor_baud}\n")
+                        unified_log_file.flush()
+                    
+                    # 切换到监控波特率（如果串口还在打开状态）
+                    # 注意：esptool可能会关闭串口，所以这里只是准备，实际监控在reset_and_monitor步骤中开始
+                    save_operation_history("Flash Completed - Ready for Monitoring", 
+                                          f"Switching to monitor baud rate {monitor_baud} for next step", 
+                                          self.session_id)
+                
+                # 如果需要，重置设备（但默认不重置，由procedures流程控制）
+                if self.config.get('reset_after_flash', False):
+                    print("Resetting device...")
+                    save_operation_history("Device Reset", "Resetting device after flash", self.session_id)
                     reset_cmd = [
                         esptool_path,
                         '--port', port,
@@ -1170,35 +1371,44 @@ class ESPFlasher:
                     ]
                     try:
                         subprocess.run(reset_cmd, capture_output=True, timeout=5)
-                        print("✓ 设备已重置")
-                    except:
+                        print("✓ Device reset")
+                        save_operation_history("Device Reset", "Device reset successful", self.session_id)
+                    except Exception as e:
+                        save_operation_history("Device Reset Failed", f"Error: {e}", self.session_id)
                         pass  # 重置失败不影响
                 
                 return True
             else:
-                print("\n\n✗ 固件烧录失败!")
-                print(f"📝 完整日志已保存到: {log_filename}")
+                print("\n\n✗ Firmware flashing failed!")
+                if unified_log_file:
+                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                save_operation_history("Flash Failed", 
+                                      f"Port: {port}, Firmware: {firmware_path}, Return code: {return_code}", 
+                                      self.session_id)
                 return False
                 
         except subprocess.TimeoutExpired:
             print("\n\n✗ 固件烧录超时（超过5分钟）")
             if 'process' in locals():
                 process.kill()
-            if 'log_file' in locals():
-                log_file.write("\n" + "=" * 80 + "\n")
-                log_file.write("错误: 烧录超时\n")
-                log_file.close()
-                print(f"📝 日志已保存到: {log_filename}")
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
+                unified_log_file.write("\n" + "=" * 80 + "\n")
+                unified_log_file.write("错误: 烧录超时\n")
+                unified_log_file.flush()
+                print(f"📝 All logs saved to: {self.unified_log_filepath}")
             return False
         except FileNotFoundError:
-            print(f"\n✗ 错误: 找不到esptool，请确保已安装: pip install esptool")
-            if 'log_file' in locals():
-                log_file.write("\n" + "=" * 80 + "\n")
-                log_file.write("错误: 找不到esptool\n")
-                log_file.close()
+            print(f"\n✗ Error: esptool not found, please install: pip install esptool")
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
+                unified_log_file.write("\n" + "=" * 80 + "\n")
+                unified_log_file.write("Error: esptool not found\n")
+                unified_log_file.flush()
+            save_operation_history("Flash Error", "esptool not found", self.session_id)
             return False
         except KeyboardInterrupt:
-            print("\n\n⚠️  用户中断烧录")
+            print("\n\n⚠️  User interrupted flashing")
             # 确保终止 subprocess（如果存在）
             if 'process' in locals() and process:
                 try:
@@ -1214,26 +1424,30 @@ class ESPFlasher:
                         process.kill()
                     except:
                         pass
-            # 关闭日志文件
-            if 'log_file' in locals() and log_file:
+            # 写入统一日志文件
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
                 try:
-                    log_file.write("\n" + "=" * 80 + "\n")
-                    log_file.write("用户中断烧录\n")
-                    log_file.close()
-                    print(f"📝 日志已保存到: {log_filename}")
+                    unified_log_file.write("\n" + "=" * 80 + "\n")
+                    unified_log_file.write("User interrupted flashing\n")
+                    unified_log_file.flush()
+                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 except:
                     pass
+            save_operation_history("Flash Interrupted", "User pressed Ctrl+C", self.session_id)
             return False
         except Exception as e:
-            print(f"\n✗ 固件烧录失败: {e}")
+            print(f"\n✗ Firmware flashing failed: {e}")
             import traceback
             traceback.print_exc()
-            if 'log_file' in locals():
-                log_file.write("\n" + "=" * 80 + "\n")
-                log_file.write(f"异常: {e}\n")
-                log_file.write(traceback.format_exc())
-                log_file.close()
-                print(f"📝 日志已保存到: {log_filename}")
+            unified_log_file = getattr(self, 'unified_log_file', None)
+            if unified_log_file:
+                unified_log_file.write("\n" + "=" * 80 + "\n")
+                unified_log_file.write(f"Exception: {e}\n")
+                unified_log_file.write(traceback.format_exc())
+                unified_log_file.flush()
+                print(f"📝 All logs saved to: {self.unified_log_filepath}")
+            save_operation_history("Flash Error", f"Error: {e}", self.session_id)
             return False
     
     def flash_with_partitions(self):
@@ -1294,6 +1508,63 @@ class ESPFlasher:
             print(f"\n✗ 固件烧录失败: {e}")
             return False
     
+    def get_shared_monitor(self, port, baud_rate):
+        """获取或创建共享的串口监控实例（自动规范化设备路径）"""
+        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
+        normalized_port = normalize_serial_port(port)
+        
+        # 如果串口和波特率相同，且监控实例已存在且打开，则复用
+        if (self.shared_monitor and 
+            self.shared_monitor_port == normalized_port and 
+            self.shared_monitor_baud == baud_rate and
+            self.shared_monitor.serial_conn and 
+            self.shared_monitor.serial_conn.is_open):
+            return self.shared_monitor
+        
+        # 如果已有监控实例但串口不同，先关闭
+        if self.shared_monitor:
+            try:
+                self.shared_monitor.close()
+            except:
+                pass
+        
+        # 创建新的监控实例（使用规范化后的端口）
+        self.shared_monitor = SerialMonitor(normalized_port, baud_rate)
+        self.shared_monitor_port = normalized_port
+        self.shared_monitor_baud = baud_rate
+        
+        if not self.shared_monitor.open():
+            self.shared_monitor = None
+            return None
+        
+        return self.shared_monitor
+    
+    def close_shared_monitor(self):
+        """关闭共享的串口监控实例"""
+        if self.shared_monitor:
+            try:
+                self.shared_monitor.close()
+            except:
+                pass
+            self.shared_monitor = None
+            self.shared_monitor_port = None
+            self.shared_monitor_baud = None
+    
+    def close_unified_log(self):
+        """关闭统一的日志文件"""
+        if hasattr(self, 'unified_log_file') and self.unified_log_file:
+            try:
+                self.unified_log_file.write(f"\n{'='*80}\n")
+                self.unified_log_file.write(f"Session Ended - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self.unified_log_file.write(f"{'='*80}\n")
+                self.unified_log_file.close()
+                if hasattr(self, 'unified_log_filepath') and self.unified_log_filepath:
+                    print(f"\n📝 All monitor logs saved to: {self.unified_log_filepath}")
+            except Exception as e:
+                print(f"  ⚠️  Error closing unified log file: {e}")
+            finally:
+                self.unified_log_file = None
+    
     def execute_procedures(self):
         """执行配置文件中定义的procedures流程"""
         if 'procedures' not in self.config or not self.config['procedures']:
@@ -1301,8 +1572,12 @@ class ESPFlasher:
             return True
         
         print("\n" + "=" * 80)
-        print("开始执行开发模式流程")
+        print("Starting Development Mode Procedures")
         print("=" * 80)
+        
+        # 显示统一日志文件路径
+        if hasattr(self, 'unified_log_filepath') and self.unified_log_filepath:
+            print(f"\n📝 All monitor logs will be saved to: {self.unified_log_filepath}\n")
         
         # 存储执行过程中的状态信息
         self.procedure_state = {
@@ -1316,19 +1591,57 @@ class ESPFlasher:
             'detected_prompts': {}  # 记录已检测到的提示，用于自动流转
         }
         
+        # 记录流程开始
+        save_operation_history("Procedures Execution Started", 
+                              f"Total procedures: {len(self.config['procedures'])}", 
+                              self.session_id)
+        
         # 执行每个procedure
         for procedure in self.config['procedures']:
-            print(f"\n执行流程: {procedure.get('name', 'unknown')}")
-            print(f"描述: {procedure.get('description', '')}")
+            procedure_name = procedure.get('name', 'unknown')
+            procedure_desc = procedure.get('description', '')
+            print(f"\nExecuting Procedure: {procedure_name}")
+            print(f"Description: {procedure_desc}")
             print("-" * 80)
             
+            # 在统一日志文件中记录过程开始
+            if hasattr(self, 'unified_log_file') and self.unified_log_file:
+                self.unified_log_file.write(f"\n{'='*80}\n")
+                self.unified_log_file.write(f"Procedure: {procedure_name}\n")
+                self.unified_log_file.write(f"Description: {procedure_desc}\n")
+                self.unified_log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                self.unified_log_file.write(f"{'='*80}\n\n")
+                self.unified_log_file.flush()
+            
+            # 记录流程开始
+            save_operation_history(f"Procedure Started: {procedure_name}", 
+                                  procedure_desc, 
+                                  self.session_id)
+            
             if not self._execute_steps(procedure.get('steps', [])):
-                print(f"\n✗ 流程执行失败: {procedure.get('name', 'unknown')}")
+                print(f"\n✗ Procedure execution failed: {procedure_name}")
+                save_operation_history(f"Procedure Failed: {procedure_name}", 
+                                      "Execution failed", 
+                                      self.session_id)
                 return False
+            
+            save_operation_history(f"Procedure Completed: {procedure_name}", 
+                                  "Execution successful", 
+                                  self.session_id)
         
         print("\n" + "=" * 80)
-        print("✓ 所有流程执行完成")
+        print("✓ All procedures completed")
         print("=" * 80)
+        save_operation_history("All Procedures Completed", 
+                              "All procedures executed successfully", 
+                              self.session_id)
+        
+        # 关闭共享的串口监控实例
+        self.close_shared_monitor()
+        
+        # 关闭统一日志文件
+        self.close_unified_log()
+        
         return True
     
     def _execute_steps(self, steps):
@@ -1338,9 +1651,14 @@ class ESPFlasher:
             step_type = step.get('type', 'unknown')
             step_desc = step.get('description', '')
             
-            print(f"\n[步骤] {step_name} ({step_type})")
+            print(f"\n[Step] {step_name} ({step_type})")
             if step_desc:
-                print(f"  描述: {step_desc}")
+                print(f"  Description: {step_desc}")
+            
+            # 记录步骤开始
+            save_operation_history(f"Step Started: {step_name}", 
+                                  f"Type: {step_type}, Description: {step_desc}", 
+                                  self.session_id)
             
             try:
                 result = self._execute_step(step)
@@ -1381,8 +1699,12 @@ class ESPFlasher:
             return self._step_flash_firmware(step)
         elif step_type == 'error':
             return self._step_error(step)
+        elif step_type == 'get_esp_info':
+            return self._step_get_esp_info(step)
         elif step_type == 'reset_and_monitor':
             return self._step_reset_and_monitor(step)
+        elif step_type == 'reset_and_monitor_fixed':
+            return self._step_reset_and_monitor_fixed(step)
         elif step_type == 'print_info':
             return self._step_print_info(step)
         elif step_type == 'wait_for_prompt':
@@ -1400,35 +1722,69 @@ class ESPFlasher:
         """检查UART串口是否存在"""
         port = self.config.get('serial_port')
         timeout = step.get('timeout', 5)
+        step_name = step.get('name', 'check_uart')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         print(f"  检查串口: {port}")
         start_time = time.time()
         
+        save_operation_history(f"Step: {step_name}", 
+                              f"Checking UART port: {port}, Timeout: {timeout}s", 
+                              session_id)
+        
         while time.time() - start_time < timeout:
             if os.path.exists(port):
                 print(f"  ✓ 串口存在: {port}")
+                save_operation_history(f"Step: {step_name} - Result", 
+                                      f"UART port exists: {port}", 
+                                      session_id)
                 return True
             time.sleep(0.5)
         
         print(f"  ✗ 串口不存在或超时: {port}")
+        save_operation_history(f"Step: {step_name} - Result", 
+                              f"UART port not found or timeout: {port}", 
+                              session_id)
         return False
     
     def _step_check_encryption(self, step):
         """通过监控ESP日志检查加密状态"""
         port = self.config.get('serial_port')
-        monitor_baud = self.config.get('monitor_baud', 115200)
+        monitor_baud = self.config.get('monitor_baud')
+        if not monitor_baud:
+            raise ValueError("monitor_baud not configured in config file")
         timeout = step.get('timeout', 10)
         log_patterns = step.get('log_patterns', {})
         
         encrypted_patterns = log_patterns.get('encrypted', [])
         not_encrypted_patterns = log_patterns.get('not_encrypted', [])
         
+        step_name = step.get('name', 'check_encryption')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+        
         print(f"  监控串口: {port} (波特率: {monitor_baud})")
         print(f"  超时: {timeout}秒")
+        
+        # 使用统一的日志文件
+        log_file = getattr(self, 'unified_log_file', None)
+        if log_file:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Step: {step_name} - Encryption Check\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        
+        save_operation_history(f"Step: {step_name}", 
+                              f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s", 
+                              session_id)
         
         monitor = SerialMonitor(port, monitor_baud)
         if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
+            if log_file:
+                log_file.write(f"[ERROR] Failed to open serial port\n")
+                log_file.close()
             return False
         
         try:
@@ -1438,6 +1794,9 @@ class ESPFlasher:
                 monitor.serial_conn.reset_output_buffer()
             
             print("  ✓ 串口已打开，开始监控...")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, starting monitoring...\n")
+                log_file.flush()
             
             # 立即开始监控循环（在复位之前就开始读取，确保不丢失任何数据）
             start_time = time.time()
@@ -1449,6 +1808,9 @@ class ESPFlasher:
             
             # 复位设备以触发启动日志（通过串口DTR/RTS信号）
             if monitor.serial_conn:
+                if log_file:
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === RESET DEVICE ===\n")
+                    log_file.flush()
                 print("  → 正在复位设备...")
                 monitor.serial_conn.dtr = False
                 monitor.serial_conn.rts = False
@@ -1458,15 +1820,24 @@ class ESPFlasher:
                 time.sleep(0.2)  # 短暂等待复位完成
             
             print("  ✓ 设备已复位，继续监控日志...")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Device reset, continuing monitoring...\n")
+                log_file.flush()
             
             # ANSI转义码正则表达式
             ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
             
-            # 持续监控日志
+            # 持续监控日志 - 收到什么存什么
             while time.time() - start_time < timeout:
                 if monitor.serial_conn and monitor.serial_conn.in_waiting > 0:
                     data = monitor.serial_conn.read(monitor.serial_conn.in_waiting)
                     text = data.decode('utf-8', errors='ignore')
+                    
+                    # 立即写入文件（原始数据，不做任何处理）
+                    if log_file:
+                        log_file.write(text)
+                        log_file.flush()
+                    
                     buffer += text
                     
                     # 按行处理，提高匹配准确性
@@ -1481,6 +1852,9 @@ class ESPFlasher:
                                 if pattern.lower() in line_clean.lower():
                                     encryption_detected = True
                                     print(f"  ✓ 检测到加密状态: {pattern}")
+                                    if log_file:
+                                        log_file.write(f"\n[ENCRYPTION DETECTED] {pattern}\n")
+                                        log_file.flush()
                                     break
                             
                             if encryption_detected is None:
@@ -1488,6 +1862,9 @@ class ESPFlasher:
                                     if pattern.lower() in line_clean.lower():
                                         encryption_detected = False
                                         print(f"  ✓ 检测到未加密状态: {pattern}")
+                                        if log_file:
+                                            log_file.write(f"\n[NOT ENCRYPTED DETECTED] {pattern}\n")
+                                            log_file.flush()
                                         break
                             
                             if encryption_detected is not None:
@@ -1496,45 +1873,96 @@ class ESPFlasher:
                     # 如果已经检测到，提前退出
                     if encryption_detected is not None:
                         break
-                
-                time.sleep(0.05)  # 减少延迟，提高响应速度
+
+                time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
             
-            monitor.close()
+            # 不关闭串口，让后续步骤继续使用
+            # monitor.close()  # 注释掉，保持串口打开
             
             if encryption_detected is None:
                 print(f"  ⚠️  超时未检测到加密状态，假设未加密")
                 encryption_detected = False
+                if log_file:
+                    log_file.write(f"\n[WARNING] Timeout, assuming not encrypted\n")
+                    log_file.flush()
             
             self.procedure_state['encryption_status'] = 'encrypted' if encryption_detected else 'not_encrypted'
+            
+            # 写入步骤完成标记
+            if log_file:
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED ===\n")
+                log_file.write(f"Encryption Status: {'encrypted' if encryption_detected else 'not_encrypted'}\n")
+                log_file.write(f"Monitoring duration: {time.time() - start_time:.2f} seconds\n")
+                log_file.flush()
+            
+            # 关闭串口，让后续的烧录步骤（esptool）能够独占使用串口
+            # esptool 需要独占串口才能正确连接设备并自动处理复位
+            if monitor:
+                try:
+                    monitor.close()
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port closed for esptool to use\n")
+                        log_file.flush()
+                except:
+                    pass
+            
             return True
             
         except Exception as e:
             print(f"  ✗ 检查加密状态时出错: {e}")
             import traceback
             traceback.print_exc()
-            monitor.close()
+            if log_file:
+                try:
+                    log_file.write(f"\n[ERROR] Step {step_name} failed: {e}\n")
+                    log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+                    log_file.flush()
+                except:
+                    pass
+            # 即使出错也要关闭串口，让后续步骤（esptool）能够使用
+            if monitor:
+                try:
+                    monitor.close()
+                except:
+                    pass
             return False
     
     def _step_conditional(self, step):
         """条件判断步骤"""
         condition = step.get('condition', '')
         condition_value = self.procedure_state.get('encryption_status')
+        step_name = step.get('name', 'conditional')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         print(f"  条件: {condition}, 当前值: {condition_value}")
         
         # 检查条件是否满足
         condition_met = False
+        condition_display_value = condition_value
+        
         if condition == 'not_encrypted':
             condition_met = (condition_value == 'not_encrypted')
         elif condition == 'encrypted':
             condition_met = (condition_value == 'encrypted')
+        elif condition == 'test_after_flash':
+            # 检查配置中的 test_after_flash 设置
+            test_after_flash = self.config.get('test_after_flash', False)
+            condition_met = bool(test_after_flash)
+            condition_display_value = test_after_flash
+            print(f"  test_after_flash 配置值: {test_after_flash}")
         
         if condition_met:
             print(f"  ✓ 条件满足，执行 on_condition_true")
             steps = step.get('on_condition_true', [])
+            save_operation_history(f"Step: {step_name}", 
+                                  f"Condition '{condition}' met (value: {condition_display_value}), executing on_condition_true", 
+                                  session_id)
         else:
             print(f"  ✓ 条件不满足，执行 on_condition_false")
             steps = step.get('on_condition_false', [])
+            save_operation_history(f"Step: {step_name}", 
+                                  f"Condition '{condition}' not met (value: {condition_display_value}), executing on_condition_false", 
+                                  session_id)
         
         return self._execute_steps(steps)
     
@@ -1542,14 +1970,71 @@ class ESPFlasher:
         """执行固件烧录"""
         timeout = step.get('timeout', 300)
         print(f"  执行固件烧录 (超时: {timeout}秒)")
-        return self.flash_firmware()
+        
+        # 在烧录前关闭之前打开的串口，让 esptool 能够独占串口
+        # esptool 需要独占串口才能正确连接设备并自动处理复位
+        print("  → 关闭之前打开的串口，让 esptool 独占使用...")
+        self.close_shared_monitor()
+        time.sleep(0.2)  # 短暂等待，确保串口完全释放
+        
+        # 在procedures流程中，烧录后不自动复位，由后续步骤处理
+        original_reset_after_flash = self.config.get('reset_after_flash', True)
+        self.config['reset_after_flash'] = False  # 临时设置为False，不自动复位
+        try:
+            result = self.flash_firmware()
+            
+            # 烧录完成后，立即切换到监控波特率并开始监控（为后续reset_and_monitor步骤做准备）
+            if result:
+                port = self.config.get('serial_port')
+                monitor_baud = self.config.get('monitor_baud')
+                if not monitor_baud:
+                    raise ValueError("monitor_baud not configured in config file")
+                print(f"\n  → 烧录完成，立即切换到监控波特率 {monitor_baud}...")
+                
+                # 获取或创建共享的串口监控实例，并切换到监控波特率
+                monitor = self.get_shared_monitor(port, monitor_baud)
+                if monitor and monitor.serial_conn:
+                    current_baud = monitor.serial_conn.baudrate
+                    if current_baud != monitor_baud:
+                        print(f"  → 切换波特率: {current_baud} → {monitor_baud}")
+                        monitor.serial_conn.close()
+                        time.sleep(0.2)
+                        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
+                        normalized_port = normalize_serial_port(port)
+                        monitor.serial_conn = serial.Serial(
+                            port=normalized_port,
+                            baudrate=monitor_baud,
+                            timeout=0.1,  # 减少超时时间，提高响应速度（像 ESP-IDF monitor）
+                            write_timeout=1
+                        )
+                        time.sleep(0.3)
+                        print(f"  ✓ 已切换到监控波特率 {monitor_baud}，准备开始监控")
+                    else:
+                        print(f"  ✓ 串口已使用监控波特率 {monitor_baud}")
+                
+                # 记录到日志
+                log_file = getattr(self, 'unified_log_file', None)
+                if log_file:
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Flash completed, switched to monitor baud rate {monitor_baud}\n")
+                    log_file.flush()
+            
+            return result
+        finally:
+            # 恢复原始设置
+            self.config['reset_after_flash'] = original_reset_after_flash
     
     def _step_error(self, step):
         """错误步骤 - 显示错误信息并退出"""
         message = step.get('message', '发生错误')
         exit_on_error = step.get('exit', False)
+        step_name = step.get('name', 'error')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         print(f"  ✗ 错误: {message}")
+        
+        save_operation_history(f"Step: {step_name} - ERROR", 
+                              f"Error message: {message}, Exit: {exit_on_error}", 
+                              session_id)
         
         if exit_on_error:
             print("\n程序退出")
@@ -1557,44 +2042,640 @@ class ESPFlasher:
         
         return False
     
+    def _step_get_esp_info(self, step):
+        """通过esptool获取ESP信息（MAC地址）"""
+        port = self.config.get('serial_port')
+        timeout = step.get('timeout', 10)
+        step_name = step.get('name', 'get_esp_info')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+        
+        print(f"  通过esptool获取ESP信息（MAC地址）")
+        
+        # 使用统一的日志文件
+        log_file = getattr(self, 'unified_log_file', None)
+        if log_file:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Step: {step_name} - Get ESP Info via esptool\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        
+        # 记录操作历史
+        save_operation_history(
+            f"Step: {step_name}",
+            f"Port: {port}, Get MAC address via esptool",
+            session_id
+        )
+        
+        # 先检查串口是否存在
+        if not port or not check_port_exists(port):
+            print(f"  ✗ 串口不存在或未配置: {port}")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port does not exist or not configured: {port}\n")
+                log_file.flush()
+            return False
+        
+        try:
+            # 检查esptool
+            esptool_path = self.check_esptool()
+            
+            # 构建命令: esptool.py --port <port> read_mac
+            cmd = [
+                esptool_path,
+                '--port', port,
+                'read-mac'
+            ]
+            
+            print(f"  执行命令: {' '.join(cmd)}")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Executing: {' '.join(cmd)}\n")
+                log_file.flush()
+            
+            # 执行命令
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            # 写入日志
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Command output:\n")
+                log_file.write(f"STDOUT:\n{result.stdout}\n")
+                log_file.write(f"STDERR:\n{result.stderr}\n")
+                log_file.write(f"Return code: {result.returncode}\n")
+                log_file.flush()
+            
+            if result.returncode != 0:
+                print(f"  ✗ esptool命令执行失败 (返回码: {result.returncode})")
+                if result.stderr:
+                    print(f"  错误信息: {result.stderr}")
+                return False
+            
+            # 解析MAC地址
+            # esptool输出格式通常是: MAC: XX:XX:XX:XX:XX:XX
+            mac_address = None
+            output = result.stdout + result.stderr
+            
+            # 尝试多种格式匹配
+            mac_patterns = [
+                r'MAC:\s*([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})',
+                r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})',
+            ]
+            
+            for pattern in mac_patterns:
+                match = re.search(pattern, output, re.IGNORECASE)
+                if match:
+                    mac_address = match.group(0)
+                    # 统一格式为 XX:XX:XX:XX:XX:XX
+                    mac_address = mac_address.replace('-', ':').upper()
+                    # 如果前面有 "MAC:" 等前缀，去掉
+                    if ':' in mac_address and mac_address.count(':') > 5:
+                        parts = mac_address.split(':')
+                        if len(parts) > 6:
+                            mac_address = ':'.join(parts[-6:])
+                    break
+            
+            if mac_address:
+                # 保存到procedure_state
+                if not hasattr(self, 'procedure_state'):
+                    self.procedure_state = {'monitored_data': {}}
+                if 'monitored_data' not in self.procedure_state:
+                    self.procedure_state['monitored_data'] = {}
+                
+                self.procedure_state['monitored_data']['mac_address'] = mac_address
+                
+                print(f"  ✓ MAC地址获取成功: {mac_address}")
+                if log_file:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] MAC Address extracted: {mac_address}\n")
+                    log_file.flush()
+                
+                # 记录操作历史
+                save_operation_history(f"Step: {step_name} - Success", 
+                                      f"MAC Address: {mac_address}", 
+                                      session_id)
+                return True
+            else:
+                print(f"  ✗ 无法从输出中解析MAC地址")
+                print(f"  输出内容:\n{output}")
+                if log_file:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Failed to extract MAC address from output\n")
+                    log_file.flush()
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print(f"  ✗ esptool命令执行超时 (超时时间: {timeout}秒)")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Command timeout after {timeout}s\n")
+                log_file.flush()
+            return False
+        except Exception as e:
+            print(f"  ✗ 执行失败: {e}")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Error: {e}\n")
+                log_file.flush()
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def reset_with_bootloader_via_esptool(self, port):
+        """使用esptool的底层命令触发bootloader"""
+        import subprocess
+        import time
+        
+        # 1. 先使用esptool进行深度复位
+        esptool_path = self.check_esptool()
+        
+        # 命令1：执行芯片复位（可能会触发bootloader）
+        reset_cmd = [
+            esptool_path,
+            '--port', port,
+            '--before', 'no_reset',
+            '--after', 'hard_reset',
+            'chip_id'
+        ]
+        
+        print("    [bootloader捕获] 使用esptool执行复位...")
+        
+        try:
+            # 执行esptool命令（会触发复位）
+            # 增加超时时间到10秒，因为某些情况下可能需要更长时间
+            result = subprocess.run(
+                reset_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            # 解析输出，看是否有bootloader信息
+            output = result.stdout + result.stderr
+            
+            if 'rst:' in output.lower() or 'boot:' in output.lower():
+                print("    [bootloader捕获] esptool输出了bootloader信息")
+                return output
+            
+            return None
+        except subprocess.TimeoutExpired:
+            # 超时不算严重错误，可能是串口被占用或设备响应慢
+            print("    [bootloader捕获] esptool命令超时（这很正常，将使用串口直接捕获）")
+            return None
+        except Exception as e:
+            print(f"    [bootloader捕获] esptool复位失败: {e}（将使用串口直接捕获）")
+            return None
+    
+    def capture_bootloader_logs(self, port, baud_rate, timeout=3.0):
+        """
+        专门捕获bootloader启动日志
+        返回: (buffer, lines, captured)
+        """
+        buffer = ""
+        lines = []
+        captured = False
+        
+        try:
+            # 先尝试使用esptool复位并获取bootloader信息
+            esptool_output = self.reset_with_bootloader_via_esptool(port)
+            if esptool_output:
+                # 如果esptool输出了bootloader信息，添加到buffer
+                buffer += esptool_output
+                esptool_lines = esptool_output.split('\n')
+                for line in esptool_lines:
+                    line_clean = line.strip()
+                    if line_clean:
+                        lines.append(line_clean)
+                captured = True
+                print(f"    [bootloader捕获] 从esptool输出中捕获到 {len(lines)} 行")
+            
+            # 打开串口继续捕获
+            normalized_port = normalize_serial_port(port)
+            ser = serial.Serial(
+                port=normalized_port,
+                baudrate=baud_rate,
+                timeout=0.1,
+                write_timeout=1
+            )
+            
+            # 执行硬件复位（如果esptool已经复位过，这里会再次复位）
+            ser.dtr = False
+            ser.rts = False
+            time.sleep(0.1)
+            ser.dtr = True
+            ser.rts = True
+            ser.flush()
+            
+            # 立即开始持续读取
+            start_time = time.time()
+            first_data_time = None
+            last_data_time = start_time  # 初始化
+            
+            while time.time() - start_time < timeout:
+                try:
+                    data = ser.read(1024)
+                    if data:
+                        text = data.decode('utf-8', errors='ignore')
+                        buffer += text
+                        
+                        if first_data_time is None:
+                            first_data_time = time.time()
+                            elapsed = (first_data_time - start_time) * 1000
+                            print(f"    [bootloader捕获] 首次数据接收: {elapsed:.2f}ms")
+                        
+                        # 按行分割
+                        new_lines = text.split('\n')
+                        for line in new_lines:
+                            line_clean = line.strip()
+                            if line_clean:
+                                lines.append(line_clean)
+                        
+                        captured = True
+                        last_data_time = time.time()
+                    else:
+                        # 如果已经收到数据，且0.2秒没有新数据，可能启动序列完成
+                        if captured and first_data_time and time.time() - last_data_time > 0.2:
+                            break
+                except Exception as e:
+                    # 继续尝试
+                    pass
+                
+                time.sleep(0.0001)  # 0.1ms 延迟
+            
+            ser.close()
+            
+            if captured:
+                print(f"    [bootloader捕获] 完成，捕获 {len(lines)} 行，buffer长度: {len(buffer)} 字节")
+            else:
+                print(f"    [bootloader捕获] 未捕获到数据，buffer长度: {len(buffer)} 字节")
+            
+            return buffer, lines, captured
+            
+        except Exception as e:
+            print(f"    [bootloader捕获] 错误: {e}")
+            import traceback
+            traceback.print_exc()
+            return buffer, lines, False
+    
+    def _step_reset_and_monitor_fixed(self, step):
+        """重构版本：先监听，后复位，通过日志判断"""
+        port = self.config.get('serial_port')
+        monitor_baud = self.config.get('monitor_baud', 115200)
+        timeout = step.get('timeout', 60)
+        
+        print(f"  复位设备并监控日志 (超时: {timeout}秒)")
+        print(f"  策略：先启动监听，后执行复位，通过日志判断")
+        
+        # 使用统一的日志文件
+        step_name = step.get('name', 'reset_and_monitor')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+        log_file = getattr(self, 'unified_log_file', None)
+        
+        if log_file:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Step: {step_name} - Reset and Monitor (Fixed Version)\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        
+        # 记录操作历史
+        save_operation_history(f"Step: {step_name}", 
+                              f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s (Fixed Version)", 
+                              session_id)
+        
+        # 1. 先创建串口连接（但不立即复位）
+        ser = None
+        try:
+            normalized_port = normalize_serial_port(port)
+            ser = serial.Serial(
+                port=normalized_port,
+                baudrate=monitor_baud,
+                timeout=0.1,  # 短的超时，用于轮询
+                write_timeout=1
+            )
+            
+            print(f"  ✓ 串口已打开: {normalized_port} @ {monitor_baud} baud")
+            
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened: {normalized_port} @ {monitor_baud} baud\n")
+                log_file.flush()
+            
+            # 2. 先清空可能存在的残留数据
+            if ser.in_waiting:
+                ser.read(ser.in_waiting)
+                time.sleep(0.05)
+            
+            # 3. 启动监听线程（在复位前！）
+            print("  → 步骤1: 启动监听线程（在复位前）...")
+            
+            buffer = ""  # 用于存储所有接收到的数据
+            stop_listening = False
+            bootloader_detected = False
+            bootloader_lines = []
+            
+            def listen_thread():
+                """监听线程：持续读取串口数据"""
+                nonlocal buffer, bootloader_detected, bootloader_lines
+                
+                start_time = time.time()
+                ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                
+                while not stop_listening and time.time() - start_time < timeout:
+                    try:
+                        # 检查是否有数据
+                        if ser.in_waiting > 0:
+                            data = ser.read(ser.in_waiting)
+                            if data:
+                                # 解码并处理
+                                text = data.decode('utf-8', errors='ignore')
+                                buffer += text
+                                
+                                # 写入统一日志文件
+                                if log_file:
+                                    log_file.write(text)
+                                    log_file.flush()
+                                
+                                # 去除ANSI转义码并检查内容
+                                clean_text = ansi_escape.sub('', text)
+                                
+                                # 按行检查bootloader标志
+                                lines = clean_text.split('\n')
+                                for line in lines:
+                                    line = line.strip()
+                                    if line:
+                                        # 打印到控制台（来自设备的原始日志，带时间戳）
+                                        ts_print(f"  [监听到] {line}")
+                                        
+                                        # 检查是否是bootloader日志
+                                        bootloader_keywords = [
+                                            'rst:', 'boot:', 'chip is', 'esp-rom',
+                                            'flash', 'sha-256', 'csum', 'secure',
+                                            'segment', 'load:', 'entry', 'mac:'
+                                        ]
+                                        
+                                        for keyword in bootloader_keywords:
+                                            if keyword.lower() in line.lower():
+                                                if not bootloader_detected:
+                                                    bootloader_detected = True
+                                                    print(f"  ✓ 检测到bootloader标志: {keyword}")
+                                                bootloader_lines.append(line)
+                                                break
+                    except Exception as e:
+                        # 读取错误，继续尝试
+                        pass
+                    
+                    # 很小的延迟，避免占用太多CPU
+                    time.sleep(0.001)
+            
+            # 启动监听线程
+            listener = threading.Thread(target=listen_thread, daemon=True)
+            listener.start()
+            
+            # 等待监听线程稳定启动
+            time.sleep(0.1)
+            print("  ✓ 监听线程已启动并运行")
+            
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Listening thread started\n")
+                log_file.flush()
+            
+            # 4. 执行复位（监听线程已经在运行）
+            print("  → 步骤2: 执行硬件复位...")
+            
+            # 记录复位前的时间戳
+            reset_start = time.time()
+            
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Hardware Reset (DTR/RTS) ===\n")
+                log_file.flush()
+            
+            # 执行复位序列
+            try:
+                # 拉低复位引脚
+                ser.dtr = False
+                ser.rts = False
+                time.sleep(0.05)  # 保持复位50ms
+                
+                # 释放复位引脚（启动设备）
+                ser.dtr = True
+                ser.rts = True
+                ser.flush()  # 确保信号发送
+                
+                reset_duration = (time.time() - reset_start) * 1000
+                print(f"  ✓ 复位完成，耗时: {reset_duration:.1f}ms")
+                
+                if log_file:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reset completed, duration: {reset_duration:.1f}ms\n")
+                    log_file.flush()
+                
+            except Exception as e:
+                print(f"  ⚠️  复位执行错误: {e}")
+                if log_file:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reset error: {e}\n")
+                    log_file.flush()
+            
+            # 5. 监听并分析复位后的输出
+            print("  → 步骤3: 监听复位后的输出（等待5秒）...")
+            
+            # 等待一段时间，让监听线程捕获数据
+            wait_start = time.time()
+            last_report_time = wait_start
+            while time.time() - wait_start < 5.0:  # 等待5秒
+                # 每0.5秒报告一次状态
+                if time.time() - last_report_time >= 0.5:
+                    elapsed = time.time() - reset_start
+                    buffer_len = len(buffer)
+                    print(f"    等待中... 已等待: {elapsed:.1f}s, 缓冲区: {buffer_len} 字符")
+                    last_report_time = time.time()
+                
+                if bootloader_detected:
+                    print(f"  ✓ 已检测到bootloader日志，停止等待")
+                    break
+                    
+                time.sleep(0.1)
+            
+            # 6. 分析结果
+            print("  → 步骤4: 分析监听结果...")
+            
+            if bootloader_detected and bootloader_lines:
+                print(f"  ✓ 成功捕获bootloader日志!")
+                print(f"    捕获到 {len(bootloader_lines)} 行bootloader日志:")
+                for i, line in enumerate(bootloader_lines[:10]):  # 显示前10行
+                    print(f"      {i+1}. {line}")
+                
+                if log_file:
+                    log_file.write(f"\n{'='*80}\n")
+                    log_file.write("BOOTLOADER LOGS DETECTED:\n")
+                    log_file.write(f"{'='*80}\n")
+                    for line in bootloader_lines:
+                        log_file.write(f"{line}\n")
+                    log_file.write(f"{'='*80}\n\n")
+                    log_file.flush()
+                
+                # 检查是否有我们期望的标志
+                has_rst = any('rst:' in line.lower() for line in bootloader_lines)
+                has_boot = any('boot:' in line.lower() for line in bootloader_lines)
+                
+                if has_rst and has_boot:
+                    print("  ✓ 检测到完整的复位完成标志 (rst: 和 boot:)")
+                elif has_rst:
+                    print("  ✓ 检测到 rst: 标志")
+                elif has_boot:
+                    print("  ✓ 检测到 boot: 标志")
+                    
+            else:
+                print(f"  ⚠️  未检测到bootloader日志")
+                print(f"    缓冲区总长度: {len(buffer)} 字符")
+                
+                if log_file:
+                    log_file.write(f"\n[WARNING] Bootloader logs not detected, buffer length: {len(buffer)} bytes\n")
+                    log_file.flush()
+                
+                # 显示缓冲区内容的前500字符，帮助诊断
+                if buffer:
+                    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                    clean_buffer = ansi_escape.sub('', buffer)
+                    
+                    if len(clean_buffer) > 0:
+                        print(f"    缓冲区内容预览:")
+                        lines = clean_buffer.split('\n')
+                        for i, line in enumerate(lines[:10]):  # 显示前10行
+                            if line.strip():
+                                print(f"      {i+1}. {line.strip()[:80]}")
+                                
+                        # 分析缓冲区内容类型
+                        if any('I (' in line for line in lines[:5]):
+                            print("  ⚠️  设备可能直接从应用程序启动（跳过了bootloader）")
+                        elif len(clean_buffer) < 10:
+                            print("  ⚠️  设备可能未响应或输出被禁用")
+            
+            # 7. 继续正常的监控流程（如果设备还在运行）
+            print("  → 步骤5: 继续监控设备输出...")
+            
+            # 等待监听线程继续运行一段时间
+            remaining_time = timeout - (time.time() - reset_start)
+            if remaining_time > 0:
+                print(f"    继续监控 {remaining_time:.1f} 秒...")
+                time.sleep(min(remaining_time, 10))  # 最多再等10秒
+            
+            # 8. 停止监听线程
+            stop_listening = True
+            if listener.is_alive():
+                listener.join(timeout=1.0)
+            
+            print(f"  ✓ 监控完成，总计捕获: {len(buffer)} 字符")
+            
+            if log_file:
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED ===\n")
+                log_file.write(f"Total buffer length: {len(buffer)} bytes\n")
+                log_file.write(f"Bootloader detected: {bootloader_detected}\n")
+                log_file.write(f"Bootloader lines: {len(bootloader_lines)}\n")
+                log_file.flush()
+            
+            # 保存到 procedure_state
+            if not hasattr(self, 'procedure_state'):
+                self.procedure_state = {'monitored_data': {}}
+            if 'monitored_data' not in self.procedure_state:
+                self.procedure_state['monitored_data'] = {}
+            
+            # 将 bootloader 日志保存到 monitored_data
+            if bootloader_lines:
+                self.procedure_state['monitored_data']['bootloader_logs'] = bootloader_lines
+                self.procedure_state['monitored_data']['bootloader_buffer'] = buffer
+            
+            return True
+            
+        except Exception as e:
+            print(f"  ✗ 监控过程中出错: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            if log_file:
+                log_file.write(f"\n[ERROR] Step {step_name} failed: {e}\n")
+                log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+                log_file.flush()
+            
+            return False
+            
+        finally:
+            # 确保串口关闭
+            if ser and ser.is_open:
+                ser.close()
+            print("  ✓ 串口已关闭")
+    
     def _step_reset_and_monitor(self, step):
         """复位设备并监控日志"""
         port = self.config.get('serial_port')
-        monitor_baud = self.config.get('monitor_baud', 115200)
+        monitor_baud = self.config.get('monitor_baud')
+        if not monitor_baud:
+            raise ValueError("monitor_baud not configured in config file")
         timeout = step.get('timeout', 60)
         log_patterns = step.get('log_patterns', {})
         extract_mac = step.get('extract_mac', False)
         extract_pressure = step.get('extract_pressure', False)
         extract_rtc = step.get('extract_rtc', False)
         monitor_button = step.get('monitor_button', False)
+        save_log_file = step.get('save_log_file', True)  # 是否保存日志文件，默认开启
         
         print(f"  复位设备并监控日志 (超时: {timeout}秒)")
         
-        monitor = SerialMonitor(port, monitor_baud)
-        if not monitor.open():
+        # 使用统一的日志文件
+        step_name = step.get('name', 'reset_and_monitor')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+        log_file = getattr(self, 'unified_log_file', None)
+        
+        # 使用共享的串口监控实例
+        monitor = self.get_shared_monitor(port, monitor_baud)
+        if not monitor:
             print("  ✗ 无法打开串口进行监控")
             return False
         
+        if log_file:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Step: {step_name} - Reset and Monitor\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        
+        # 记录操作历史
+        save_operation_history(f"Step: {step_name}", 
+                              f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s", 
+                              session_id)
+        
         try:
-            # 先清空串口缓冲区，确保从干净状态开始
-            if monitor.serial_conn:
-                monitor.serial_conn.reset_input_buffer()
-                monitor.serial_conn.reset_output_buffer()
+            # 串口已经在烧录步骤中切换到监控波特率了，这里直接使用，不再切换
+            # 注意：不清空串口缓冲区！保持所有数据，包括复位前的数据
+            # 这样可以捕获完整的启动序列（像 ESP-IDF monitor 一样）
+            # if monitor.serial_conn:
+            #     monitor.serial_conn.reset_input_buffer()  # 注释掉，不清空
+            #     monitor.serial_conn.reset_output_buffer()  # 注释掉，不清空
             
-            print("  ✓ 串口已打开，开始监控...")
+            print("  ✓ 串口已就绪，开始监控（波特率已在烧录步骤中切换，不清空缓冲区以捕获所有数据）...")
+            if log_file:
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port ready at {monitor_baud} baud, starting monitoring (buffer NOT cleared to capture all data)\n")
+                log_file.flush()
             
-            # 立即开始监控循环（在复位之前就开始读取，确保不丢失任何数据）
+            # 步骤1: 立即开始监控（在复位之前就开始，确保不丢失任何数据）
             start_time = time.time()
-            buffer = ""
+            buffer = ""  # 主buffer，用于后续处理（按行分割）
             monitored_data = self.procedure_state['monitored_data']
             
-            # 标志位，避免重复打印
+            # 标志位，避免重复打印/重复判断
             boot_complete_printed = False
             mac_extracted = False
             pressure_extracted = False
             rtc_extracted = False
-            button_detected = False
-            button_pressed = False  # 记录按钮是否已按下
+            button_detected = False          # 是否已经检测到“需要按键”的提示
+            button_pressed = False           # 是否已经确认按键被按下
+            button_test_done = False         # 按键测试是否已经结束（通过/超时）
+            button_prompt_time = None        # 第一次检测到按键提示的时间
+            # 按键测试超时时间（秒），从检测到提示开始计时
+            button_press_timeout = float(step.get('button_test_timeout', 10))
+            # 等待按键提示出现的超时时间（秒），从复位完成开始计时
+            # ESP启动到打印"需要按键"的提示，最多只需要3秒钟
+            button_prompt_detection_timeout = float(step.get('button_prompt_detection_timeout', 5.0))
+            reset_complete_time = None       # 复位完成的时间
             
             # 测试状态跟踪
             test_states = step.get('test_states', {})
@@ -1606,30 +2687,420 @@ class ESPFlasher:
             wait_for_button = auto_advance.get('wait_for_button', False)
             button_prompt = auto_advance.get('button_prompt', 'Press button to continue')
             
-            # 先短暂监控一下，确保串口稳定
-            time.sleep(0.2)
-            
-            # 复位设备（通过串口DTR/RTS信号）
-            if monitor.serial_conn:
-                print("  → 正在复位设备...")
-                monitor.serial_conn.dtr = False
-                monitor.serial_conn.rts = False
-                time.sleep(0.1)
-                monitor.serial_conn.dtr = True
-                monitor.serial_conn.rts = True
-                time.sleep(0.2)  # 短暂等待复位完成
-            
-            print("  ✓ 设备已复位，继续监控日志...")
-            print("  📊 当前测试状态: 等待设备启动...")
-            
-            # 持续监控日志
-            while time.time() - start_time < timeout:
-                if monitor.serial_conn and monitor.serial_conn.in_waiting > 0:
-                    data = monitor.serial_conn.read(monitor.serial_conn.in_waiting)
-                    text = data.decode('utf-8', errors='ignore')
-                    buffer += text
+            # ESP-IDF monitor 方式：在复位前就开始监听，复位时使用硬件复位，串口保持打开
+            if monitor.serial_conn and monitor.serial_conn.is_open:
+                if log_file:
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === ESP-IDF Monitor Style: Start monitoring before reset ===\n")
+                    log_file.flush()
+                
+                print("  → ESP-IDF monitor 方式: 复位前开始持续监听...")
+                
+                buffer = ""  # 主buffer，用于后续处理
+                
+                # 确保串口使用正确的波特率和超时设置（像 ESP-IDF monitor）
+                if monitor.serial_conn.baudrate != monitor_baud:
+                    print(f"  → 设置串口波特率为 {monitor_baud}...")
+                    monitor.serial_conn.close()
+                    normalized_port = normalize_serial_port(port)
+                    monitor.serial_conn = serial.Serial(
+                        port=normalized_port,
+                        baudrate=monitor_baud,
+                        timeout=0.1,  # 像 ESP-IDF monitor 一样使用小的 timeout
+                        write_timeout=1
+                    )
+                    time.sleep(0.1)
+                
+                # 复位前短暂监听，清空可能存在的残留数据
+                pre_reset_start = time.time()
+                while time.time() - pre_reset_start < 0.1:
+                    try:
+                        # 使用 read() 方法持续读取（像 ESP-IDF monitor）
+                        data = monitor.serial_conn.read(1024)  # 读取最多1024字节
+                        if data:
+                            text = data.decode('utf-8', errors='ignore')
+                            buffer += text
+                            reset_detection_buffer += text
+                            if log_file:
+                                log_file.write(text)
+                                log_file.flush()
+                    except Exception:
+                        pass
+                    time.sleep(0.01)
+                
+                if log_file:
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Hardware Reset (DTR/RTS sequence) ===\n")
+                    log_file.flush()
+                
+                print("  → 执行硬件复位（DTR/RTS序列，串口保持打开）...")
+                
+                try:
+                    # 使用 DTR/RTS 复位序列（与 idf.py monitor 类似）
+                    # 序列：拉低 EN (DTR=False) + 拉高 GPIO0 (RTS=True) → 释放 EN (DTR=True) → 释放 GPIO0 (RTS=False)
+                    # 关键：不清空输入缓冲区，保持串口打开
                     
-                    # 按行处理
+                    # 保存当前设置（用于调试）
+                    original_dtr = monitor.serial_conn.dtr
+                    original_rts = monitor.serial_conn.rts
+                    
+                    # 打印复位前的状态
+                    print(f"  [复位前] DTR={original_dtr}, RTS={original_rts}")
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Before reset: DTR={original_dtr}, RTS={original_rts}\n")
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Starting reset sequence: DTR=False (EN low), RTS=True (GPIO0 high)\n")
+                        log_file.flush()
+                    
+                    # 步骤1: 拉低 EN，拉高 GPIO0（进入下载模式）
+                    # 与 execute_test_only 保持一致：rts = False (拉低 EN), dtr = True (拉高 GPIO0)
+                    monitor.serial_conn.rts = False  # 拉低 EN
+                    monitor.serial_conn.dtr = True   # 拉高 GPIO0
+                    time.sleep(0.01)  # 短暂延迟，确保信号稳定
+                    
+                    # 打印步骤1后的状态
+                    dtr_state = monitor.serial_conn.dtr
+                    rts_state = monitor.serial_conn.rts
+                    print(f"  [步骤1] 拉低EN+拉高GPIO0后: DTR={dtr_state}, RTS={rts_state}")
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] After step 1: DTR={dtr_state}, RTS={rts_state}\n")
+                        log_file.flush()
+                    
+                    time.sleep(0.09)  # 剩余时间，总共保持 100ms
+                    
+                    # 在复位低电平期间持续读取
+                    reset_low_start = time.time()
+                    while time.time() - reset_low_start < 0.1:
+                        try:
+                            data = monitor.serial_conn.read(1024)
+                            if data:
+                                text = data.decode('utf-8', errors='ignore')
+                                buffer += text
+                                reset_detection_buffer += text
+                                if log_file:
+                                    log_file.write(text)
+                                    log_file.flush()
+                        except Exception:
+                            pass
+                        time.sleep(0.01)
+                    
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Releasing EN: RTS=True\n")
+                        log_file.flush()
+                    
+                    # 步骤2: 释放 EN（启动设备）
+                    # 与 execute_test_only 保持一致：rts = True (释放 EN)
+                    monitor.serial_conn.rts = True   # 释放 EN
+                    time.sleep(0.1)  # 等待 100ms（与 execute_test_only 保持一致）
+                    
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Releasing GPIO0: RTS=False (exit download mode)\n")
+                        log_file.flush()
+                    
+                    # 步骤3: 释放 GPIO0（退出下载模式，进入正常运行模式）
+                    # 与 execute_test_only 保持一致：rts = False (释放 GPIO0)
+                    monitor.serial_conn.rts = False  # 释放 GPIO0
+                    
+                    # 打印步骤3后的最终状态
+                    dtr_state = monitor.serial_conn.dtr
+                    rts_state = monitor.serial_conn.rts
+                    print(f"  [步骤3] 释放GPIO0后: DTR={dtr_state}, RTS={rts_state}")
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] After step 3 (RTS=False): DTR={dtr_state}, RTS={rts_state}\n")
+                        log_file.flush()
+                    
+                    # 确保信号真正释放（刷新串口状态）
+                    monitor.serial_conn.flush()
+                    
+                    # 打印复位后的最终状态
+                    final_dtr = monitor.serial_conn.dtr
+                    final_rts = monitor.serial_conn.rts
+                    print(f"  [复位后] 最终状态: DTR={final_dtr}, RTS={final_rts}")
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reset sequence completed, final state: DTR={final_dtr}, RTS={final_rts}\n")
+                        log_file.flush()
+                    
+                    print("  ✓ 复位完成，开始监听日志...\n")
+                    
+                    # 与 execute_test_only 保持一致：等待设备启动（0.5秒）
+                    print("  ⏳ 等待设备启动（0.5秒）...")
+                    time.sleep(0.5)
+                    
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Starting continuous read...\n")
+                        log_file.flush()
+                    
+                    # ESP-IDF monitor 方式：复位后开始持续读取
+                    # 关键：在复位信号释放后立即开始读取，持续轮询直到捕获到启动序列
+                    reset_read_start = time.time()
+                    reset_read_timeout = 3.0  # 读取3秒的启动序列
+                    first_data_received = False
+                    last_data_time = reset_read_start
+                    
+                    print("  → 复位后立即开始持续读取（ESP-IDF monitor 方式）...")
+                    
+                    # 持续读取循环（像 ESP-IDF monitor 一样）
+                    # 关键：持续轮询，使用 read() 方法，不依赖 in_waiting
+                    while time.time() - reset_read_start < reset_read_timeout:
+                        try:
+                            # 确保串口仍然有效
+                            if not monitor.serial_conn.is_open:
+                                print(f"  ⚠️  串口已关闭，尝试重新打开...")
+                                if log_file:
+                                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port closed, attempting to reopen...\n")
+                                    log_file.flush()
+                                try:
+                                    normalized_port = normalize_serial_port(port)
+                                    monitor.serial_conn = serial.Serial(
+                                        port=normalized_port,
+                                        baudrate=monitor_baud,
+                                        timeout=0.1,
+                                        write_timeout=1
+                                    )
+                                    time.sleep(0.1)
+                                except Exception as e2:
+                                    print(f"  ✗ 无法重新打开串口: {e2}")
+                                    if log_file:
+                                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Failed to reopen serial port: {e2}\n")
+                                        log_file.flush()
+                                    break
+                            
+                            # 使用 read() 方法持续读取（像 ESP-IDF monitor）
+                            # read() 会在 timeout 时间内等待数据，如果没有数据会返回空
+                            # 但我们持续轮询，确保第一时间捕获数据
+                            data = monitor.serial_conn.read(1024)
+                            
+                            if data:
+                                text = data.decode('utf-8', errors='ignore')
+                                buffer += text
+                                reset_detection_buffer += text
+                                last_data_time = time.time()
+                                
+                                if not first_data_received:
+                                    first_data_received = True
+                                    elapsed = (last_data_time - reset_read_start) * 1000
+                                    if log_file:
+                                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] First data received after reset: {elapsed:.2f}ms\n")
+                                        log_file.flush()
+                                    print(f"  [复位后] 首次数据接收: {elapsed:.2f}ms")
+                                
+                                if log_file:
+                                    log_file.write(text)
+                                    log_file.flush()
+                            else:
+                                # 如果没有数据，但已经收到过数据，检查是否启动序列完成
+                                if first_data_received and time.time() - last_data_time > 0.2:
+                                    # 如果已经收到数据，且0.2秒没有新数据，可能启动序列完成
+                                    if log_file:
+                                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] No new data for 0.2s, startup sequence may be complete\n")
+                                        log_file.flush()
+                                    break
+                        except Exception as e:
+                            # 记录异常但继续尝试
+                            if log_file:
+                                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Read error (continuing): {e}\n")
+                                log_file.flush()
+                        
+                        # 极小的延迟，最大化读取频率（像 ESP-IDF monitor）
+                        time.sleep(0.0001)  # 0.1ms，持续轮询
+                    
+                    if log_file:
+                        elapsed_total = (time.time() - reset_read_start) * 1000
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reset read loop completed, total time: {elapsed_total:.2f}ms, data received: {first_data_received}\n")
+                        log_file.flush()
+                    
+                    if first_data_received:
+                        print(f"  ✓ 复位后读取完成，已捕获启动日志")
+                    else:
+                        print(f"  ⚠️  复位后未收到数据，可能设备未正常启动")
+                        
+                except Exception as e:
+                    print(f"  ✗ 硬件复位过程出错: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    if log_file:
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Hardware reset error: {e}\n")
+                        log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+                        log_file.flush()
+                
+                # 不再单独检测 rst:/boot: 复位标志，直接进入后续自检日志监控
+                print("  → 步骤3: 跳过复位完成标志检测，直接进入日志监控阶段...")
+                reset_timeout = 0.0
+                reset_completed = True
+                reset_start_time = time.time()
+                # 注意：不要重置 reset_detection_buffer！继续使用复位时读取的数据
+                # reset_detection_buffer 已经在复位过程中累积了数据
+                processed_buffer_length = 0  # 记录已处理的buffer长度，避免重复处理
+                
+                while time.time() - reset_start_time < reset_timeout:
+                    if monitor.serial_conn and monitor.serial_conn.is_open:
+                        # 持续读取，不等待（像 ESP-IDF monitor 一样）
+                        if monitor.serial_conn.in_waiting > 0:
+                            data = monitor.serial_conn.read(monitor.serial_conn.in_waiting)
+                            text = data.decode('utf-8', errors='ignore')
+                            
+                            # 立即写入文件（原始数据，不做任何处理）- 收到什么存什么
+                            if log_file:
+                                log_file.write(text)
+                                log_file.flush()  # 确保立即写入磁盘
+                            
+                            # 添加到buffer用于处理
+                            buffer += text
+                            reset_detection_buffer += text  # 用于检测复位标志
+                        
+                        # 检测复位完成标志（在完整buffer中检测，不分割）
+                        # 去除ANSI转义码后检测
+                        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                        reset_buffer_clean = ansi_escape.sub('', reset_detection_buffer)
+                        reset_buffer_lower = reset_buffer_clean.lower()
+                        
+                        if 'rst:' in reset_buffer_lower and 'boot:' in reset_buffer_lower:
+                            # 找到包含rst和boot的部分，提取完整行
+                            lines = reset_buffer_clean.split('\n')
+                            for i, line in enumerate(lines):
+                                line_clean = line.strip()
+                                # 检查单行是否同时包含rst和boot
+                                if 'rst:' in line_clean.lower() and 'boot:' in line_clean.lower():
+                                    print(f"\n  {'='*60}")
+                                    print(f"  ✓ Reset completion flag detected:")
+                                    print(f"  {line_clean}")
+                                    print(f"  {'='*60}\n")
+                                    if log_file:
+                                        log_file.write(f"\n[RESET DETECTED] {line_clean}\n")
+                                        log_file.flush()
+                                    reset_completed = True
+                                    break
+                                # 检查跨行情况
+                                if i < len(lines) - 1:
+                                    next_line_clean = lines[i+1].strip()
+                                    if ('rst:' in line_clean.lower() and 'boot:' in next_line_clean.lower()) or \
+                                       ('boot:' in line_clean.lower() and 'rst:' in next_line_clean.lower()):
+                                        combined = f"{line_clean} {next_line_clean}"
+                                        print(f"\n  {'='*60}")
+                                        print(f"  ✓ Reset completion flag detected (cross-line):")
+                                        print(f"  {combined}")
+                                        print(f"  {'='*60}\n")
+                                        if log_file:
+                                            log_file.write(f"\n[RESET DETECTED (cross-line)] {combined}\n")
+                                            log_file.flush()
+                                        reset_completed = True
+                                        break
+                            
+                            if reset_completed:
+                                reset_complete_time = time.time()  # 记录复位完成时间
+                                break
+                        
+                        # 按行处理，显示日志（只处理新收到的数据，避免重复打印）
+                        # 只处理 buffer 中新增的部分（从 processed_buffer_length 开始）
+                        new_data = buffer[processed_buffer_length:]
+                        if new_data:
+                            temp_buffer = new_data
+                            while '\n' in temp_buffer:
+                                line, temp_buffer = temp_buffer.split('\n', 1)
+                                # 去除ANSI转义码
+                                line_clean = ansi_escape.sub('', line)
+                                line_clean = line_clean.strip()
+                                if line_clean:
+                                    print(f"  [Log] {line_clean}")
+                            # 更新已处理的长度（保留最后一个不完整的行在 buffer 中）
+                            # 计算已处理的完整行的总长度
+                            processed_lines = new_data.rsplit('\n', 1)[0] if '\n' in new_data else ""
+                            if processed_lines:
+                                processed_buffer_length += len(processed_lines) + 1  # +1 for the '\n'
+                    
+                    if reset_completed:
+                        break
+                    
+                    time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
+                
+                if not reset_completed:
+                    # 显示调试信息：显示实际收到的buffer内容（前500字符）
+                    debug_info = reset_detection_buffer[:500] if len(reset_detection_buffer) > 0 else "(无数据)"
+                    print(f"  ⚠️  未检测到复位完成标志 (rst: 和 boot:)，超时 {reset_timeout} 秒")
+                    print(f"  [调试] 收到的数据预览: {repr(debug_info)}")
+                    print(f"  [调试] 数据长度: {len(reset_detection_buffer)} 字节")
+                    if log_file:
+                        log_file.write(f"\n[WARNING] Reset detection timeout. Buffer length: {len(reset_detection_buffer)} bytes\n")
+                        log_file.flush()
+                    print(f"  继续监控...")
+                else:
+                    print("  ✓ 设备已复位，继续监控日志...")
+            
+            # 与 execute_test_only 保持一致：开始监控日志
+            print("  📊 开始监控日志（所有日志将实时显示并写入文件）...\n")
+            if log_file:
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === START MONITORING ===\n")
+                log_file.flush()
+            
+            # 在持续监控开始前，检查已收到的buffer中是否包含RTC和pressure信息
+            # 去除ANSI转义码
+            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+            buffer_clean = ansi_escape.sub('', buffer)
+            
+            # 检查已收到的buffer中是否包含RTC和pressure（不等待，只要检测到即可）
+            if extract_rtc and not rtc_extracted:
+                rtc_patterns = log_patterns.get('rtc_pass', [])
+                for pattern in rtc_patterns:
+                    if pattern.lower() in buffer_clean.lower():
+                        # 尝试从buffer中提取包含RTC信息的行
+                        for line in buffer_clean.split('\n'):
+                            if pattern.lower() in line.lower():
+                                monitored_data['rtc_time'] = line.strip()
+                                print(f"  ✓ 在已收到的日志中检测到RTC测试通过: {line.strip()}")
+                                rtc_extracted = True
+                                break
+                        if rtc_extracted:
+                            break
+            
+            if extract_pressure and not pressure_extracted:
+                pressure_patterns = log_patterns.get('pressure_sensor_pass', [])
+                for pattern in pressure_patterns:
+                    if pattern.lower() in buffer_clean.lower():
+                        # 尝试从buffer中提取包含pressure信息的行
+                        for line in buffer_clean.split('\n'):
+                            if pattern.lower() in line.lower():
+                                monitored_data['pressure_sensor'] = line.strip()
+                                print(f"  ✓ 在已收到的日志中检测到压力传感器测试通过: {line.strip()}")
+                                pressure_extracted = True
+                                break
+                        if pressure_extracted:
+                            break
+            
+            # 在持续监控开始前，清空 buffer 中已处理的部分（保留最后一个不完整的行）
+            # 找到最后一个换行符的位置
+            last_newline_pos = buffer.rfind('\n')
+            if last_newline_pos >= 0:
+                # 保留最后一个不完整的行
+                buffer = buffer[last_newline_pos + 1:]
+            
+            while time.time() - start_time < timeout:
+                # 检查是否超时等待按键提示出现（仅在启用按钮监控且未检测到提示时）
+                if monitor_button and not button_detected and reset_complete_time:
+                    elapsed_since_reset = time.time() - reset_complete_time
+                    if elapsed_since_reset > button_prompt_detection_timeout:
+                        print(f"\n  ⚠️  等待按键提示超时（复位后 {elapsed_since_reset:.1f}s 内未检测到按键提示）")
+                        print(f"  ✗ 设备可能未正常启动或固件未进入预期流程")
+                        if log_file:
+                            log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] BUTTON PROMPT DETECTION TIMEOUT: {elapsed_since_reset:.2f}s after reset, button prompt not detected\n")
+                            log_file.flush()
+                        monitored_data['button_prompt_detected'] = False
+                        monitored_data['button_prompt_timeout'] = True
+                        # 可以选择返回False（失败）或继续等待（如果其他测试已完成）
+                        # 这里选择返回False，因为按键提示是必需的
+                        return False
+                
+                if monitor.serial_conn and monitor.serial_conn.is_open:
+                    # 持续读取，不等待（像 ESP-IDF monitor 一样）
+                    if monitor.serial_conn.in_waiting > 0:
+                        data = monitor.serial_conn.read(monitor.serial_conn.in_waiting)
+                        text = data.decode('utf-8', errors='ignore')
+                        
+                        # 立即写入文件（原始数据，不做任何处理）- 收到什么存什么
+                        if log_file:
+                            log_file.write(text)
+                            log_file.flush()  # 确保立即写入磁盘
+                        
+                        # 添加到buffer用于处理
+                        buffer += text
+                    
+                    # 按行处理（每次只处理完整的行，保留不完整的行在 buffer 中）
                     while '\n' in buffer:
                         line, buffer = buffer.split('\n', 1)
                         # 去除ANSI转义码
@@ -1637,7 +3108,8 @@ class ESPFlasher:
                         line_clean = ansi_escape.sub('', line)
                         line_clean = line_clean.strip()
                         if line_clean:
-                            print(f"  [日志] {line_clean}")
+                            # 来自设备的日志行，带时间戳
+                            ts_print(f"  [日志] {line_clean}")
                             
                             # 检查并更新测试状态
                             for state_name, state_config in test_states.items():
@@ -1667,45 +3139,39 @@ class ESPFlasher:
                                             mac_extracted = True
                                             break
                             
-                            # 提取压力传感器信息（只提取第一次有效读数）
+                            # 提取压力传感器信息（只要在日志中检测到即可，不等待特定顺序）
                             if extract_pressure and not pressure_extracted:
-                                pressure_patterns = log_patterns.get('pressure_sensor', [])
+                                pressure_patterns = log_patterns.get('pressure_sensor_pass', [])
                                 for pattern in pressure_patterns:
-                                    if pattern.lower() in line_clean.lower() and 'Reading:' in line_clean:
+                                    if pattern.lower() in line_clean.lower():
                                         monitored_data['pressure_sensor'] = line_clean
-                                        print(f"  ✓ 检测到压力传感器: {line_clean}")
+                                        print(f"  ✓ 检测到压力传感器测试通过: {line_clean}")
                                         pressure_extracted = True
                                         break
                             
-                            # 提取RTC时间（只提取第一次）
+                            # 提取RTC时间（只要在日志中检测到即可，不等待特定顺序）
                             if extract_rtc and not rtc_extracted:
-                                rtc_patterns = log_patterns.get('rtc_time', [])
+                                rtc_patterns = log_patterns.get('rtc_pass', [])
                                 for pattern in rtc_patterns:
-                                    if pattern.lower() in line_clean.lower() and 'RTC Time now:' in line_clean:
+                                    if pattern.lower() in line_clean.lower():
                                         monitored_data['rtc_time'] = line_clean
-                                        print(f"  ✓ 检测到RTC时间: {line_clean}")
+                                        print(f"  ✓ 检测到RTC测试通过: {line_clean}")
                                         rtc_extracted = True
                                         break
                             
-                            # 监控按钮状态
+                            # 监控按钮状态：检测到提示后开始计时，在限定时间内等待“按下”迹象
                             if monitor_button:
-                                button_patterns = log_patterns.get('button_pressed', [])
+                                button_patterns = log_patterns.get('button_prompt', [])
                                 for pattern in button_patterns:
                                     if pattern.lower() in line_clean.lower():
                                         if not button_detected:
-                                            monitored_data['button_pressed'] = True
-                                            print(f"  ✓ 检测到按钮按下提示")
+                                            print(f"  🔘 提示: 需要用户按下按键继续（将从现在开始计时 {button_press_timeout:.0f}s）")
                                             button_detected = True
-                                            if wait_for_button:
-                                                print(f"  ⏸️  等待用户按下按钮...")
+                                            button_prompt_time = time.time()
+                                            # 记录到监控数据，便于后续写入本地数据库
+                                            monitored_data['button_prompt_detected'] = True
+                                            monitored_data['button_prompt_line'] = line_clean
                                         break
-                            
-                            # 检测按钮是否真的被按下（通过检测后续测试步骤）
-                            if wait_for_button and button_detected and not button_pressed:
-                                # 按钮按下后，设备会继续执行LED、阀门测试等
-                                if any(keyword in line_clean.lower() for keyword in ['toggling led', 'toggling valve', 'leds', 'valve']):
-                                    button_pressed = True
-                                    print(f"  ✓ 按钮已按下，设备继续执行测试")
                             
                             # 检查是否启动完成（只打印一次）
                             if not boot_complete_printed:
@@ -1716,66 +3182,189 @@ class ESPFlasher:
                                         boot_complete_printed = True
                                         break
                             
-                            # 检查自动流转条件
+                            # 检查硬件版本输入提示，自动输入默认值
+                            hardware_version_patterns = log_patterns.get('hardware_version_prompt', [])
+                            for pattern in hardware_version_patterns:
+                                if pattern.lower() in line_clean.lower():
+                                    # 如果启用了按钮监控，则视为“按钮已按下”，完成按钮测试
+                                    if monitor_button and button_detected and not button_test_done:
+                                        button_pressed = True
+                                        button_test_done = True
+                                        monitored_data['button_test_result'] = 'PASS'
+                                        print("  ✓ 按键测试通过（检测到硬件版本输入提示，认为已经按下按键并进入下一步）")
+                                        if log_file:
+                                            log_file.write("[BUTTON TEST] PASS (hardware version prompt detected after button prompt)\n")
+                                            log_file.flush()
+                                    # 检测到硬件版本输入提示，自动输入默认值
+                                    version_string = self.config.get('version_string', '')
+                                    if version_string:
+                                        # 使用共享的串口监控实例发送
+                                        if monitor and monitor.serial_conn and monitor.serial_conn.is_open:
+                                            time.sleep(0.3)  # 短暂等待提示完全显示
+                                            clean_input = version_string.replace('\n', '')
+                                            monitor.serial_conn.write((clean_input + '\n').encode('utf-8'))
+                                            monitor.serial_conn.flush()
+                                            display_value = clean_input.replace('\r', '\\r').replace('\n', '\\n')
+                                            print(f"  ✓ 自动输入硬件版本: {display_value}")
+                                            if log_file:
+                                                log_file.write(f"[AUTO INPUT] Hardware Version: {display_value}\n")
+                                                log_file.flush()
+                                    break
+                            
+                            # 检查序列号输入提示，自动输入（使用device_code_rule生成或默认值）
+                            serial_number_patterns = log_patterns.get('serial_number_prompt', [])
+                            for pattern in serial_number_patterns:
+                                if pattern.lower() in line_clean.lower():
+                                    # 检测到序列号输入提示，自动输入
+                                    device_code_rule = self.config.get('device_code_rule', '')
+                                    if device_code_rule:
+                                        # 使用SerialMonitor的generate_device_code方法生成
+                                        monitor_instance = SerialMonitor(port, monitor_baud)
+                                        device_code = monitor_instance.generate_device_code(device_code_rule)
+                                    else:
+                                        # 如果没有配置device_code_rule，使用默认值
+                                        device_code = self.config.get('default_sn', 'DEFAULT')
+                                    
+                                    if device_code:
+                                        # 使用共享的串口监控实例发送
+                                        if monitor and monitor.serial_conn and monitor.serial_conn.is_open:
+                                            time.sleep(0.3)  # 短暂等待提示完全显示
+                                            clean_input = device_code.replace('\n', '')
+                                            monitor.serial_conn.write((clean_input + '\n').encode('utf-8'))
+                                            monitor.serial_conn.flush()
+                                            print(f"  ✓ 自动输入序列号: {device_code}")
+                                            if log_file:
+                                                log_file.write(f"[AUTO INPUT] Serial Number: {device_code}\n")
+                                                log_file.flush()
+                                    break
+                            
+                            # 检查自动流转条件（保留原有逻辑，但不再等待按钮）
                             if auto_advance:
                                 advance_pattern = auto_advance.get('pattern', '')
                                 if advance_pattern and advance_pattern.lower() in line_clean.lower():
-                                    # 如果需要等待按钮，检查按钮是否已按下
-                                    if wait_for_button:
-                                        if not button_pressed:
-                                            # 按钮还没按下，不能自动流转，继续等待
-                                            print(f"  ⏸️  检测到硬件版本提示，但按钮尚未按下，继续等待...")
-                                            continue
-                                        else:
-                                            # 按钮已按下，可以自动流转
-                                            advance_desc = auto_advance.get('description', '检测到自动流转条件')
-                                            print(f"  ✓ {advance_desc} (按钮已按下)")
-                                    else:
-                                        # 不需要等待按钮，直接流转
-                                        advance_desc = auto_advance.get('description', '检测到自动流转条件')
-                                        print(f"  ✓ {advance_desc}")
+                                    advance_desc = auto_advance.get('description', '检测到自动流转条件')
+                                    print(f"  ✓ {advance_desc}")
                                     
                                     # 记录检测到的提示
                                     self.procedure_state['detected_prompts'][advance_pattern] = True
-                                    monitor.close()
+                                    # 不关闭串口，让后续步骤继续使用
+                                    # monitor.close()  # 注释掉，保持串口打开
                                     print(f"  → 自动进入下一步...")
                                     return True
-                
-                time.sleep(0.05)  # 减少延迟，提高响应速度
+
+                            # 如果关键自检步骤都已完成，则提前结束监控，避免无意义等待超时
+                            if pressure_extracted and (not extract_rtc or rtc_extracted) and (not monitor_button or button_test_done):
+                                print("  ✓ 自检关键步骤已完成，提前结束日志监控")
+                                if log_file:
+                                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Self-test conditions met, stopping monitoring loop early\n")
+                                    log_file.flush()
+                                return True
+
+                time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
             
-            monitor.close()
-            print(f"  ✓ 监控完成")
+            # 不关闭串口，让后续步骤继续使用
+            # monitor.close()  # 注释掉，保持串口打开
+            
+            # 写入步骤完成标记
+            if log_file:
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED ===\n")
+                log_file.write(f"Monitoring duration: {time.time() - start_time:.2f} seconds\n")
+                log_file.write(f"[NOTE] Serial port kept open for next steps\n")
+                log_file.flush()
+            
+            print(f"  ✓ Monitoring completed")
+            print(f"  📊 Total monitoring time: {time.time() - start_time:.2f} seconds")
+            print(f"  ℹ️  Serial port kept open for next steps")
+            
             return True
             
         except Exception as e:
             print(f"  ✗ 监控过程中出错: {e}")
             import traceback
             traceback.print_exc()
-            monitor.close()
+            
+            # 写入错误信息
+            if log_file:
+                try:
+                    log_file.write(f"\n[ERROR] Step {step_name} failed: {e}\n")
+                    log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+                    log_file.flush()
+                except:
+                    pass
+            
+            # 不关闭串口，让后续步骤继续使用（即使出错也保持打开）
+            # monitor.close()  # 注释掉，保持串口打开
             return False
     
     def _step_print_info(self, step):
-        """打印监控到的信息"""
+        """打印监控到的信息（测试结果汇总表）"""
         info_types = step.get('info_types', [])
         monitored_data = self.procedure_state['monitored_data']
-        
-        print("  监控到的信息:")
-        for info_type in info_types:
-            value = monitored_data.get(info_type)
-            if value:
-                print(f"    {info_type}: {value}")
+        step_name = step.get('name', 'print_info')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+
+        # 如果没有指定 info_types，使用一组常用的测试关键字段
+        if not info_types:
+            info_types = [
+                'mac_address',
+                'rtc_time',
+                'pressure_sensor',
+                'button_test_result',
+                'button_prompt_detected',
+                'hw_version',
+                'serial_number',
+            ]
+
+        # 将部分字段映射为更友好的显示名称
+        display_name_map = {
+            'mac_address': 'MAC 地址',
+            'rtc_time': 'RTC 测试',
+            'pressure_sensor': '压力传感器',
+            'button_test_result': '按键测试结果',
+            'button_prompt_detected': '是否检测到按键提示',
+            'hw_version': '硬件版本',
+            'serial_number': '序列号',
+        }
+
+        print("\n  ================== 自检结果汇总 ==================")
+
+        # 计算对齐宽度
+        key_width = max(len(display_name_map.get(k, k)) for k in info_types)
+
+        info_details = []
+        for key in info_types:
+            raw_value = monitored_data.get(key)
+            name = display_name_map.get(key, key)
+
+            if raw_value is None or raw_value == "":
+                value_str = "(未检测到)"
             else:
-                print(f"    {info_type}: (未检测到)")
-        
+                value_str = str(raw_value)
+
+            print(f"  {name.ljust(key_width)} : {value_str}")
+            info_details.append(f"{name}={value_str}")
+
+        print("  ==================================================\n")
+
+        save_operation_history(
+            f"Step: {step_name}",
+            f"Monitored info summary: {', '.join(info_details)}",
+            session_id,
+        )
+
         return True
     
     def _step_wait_for_prompt(self, step):
         """等待特定提示出现"""
         port = self.config.get('serial_port')
-        monitor_baud = self.config.get('monitor_baud', 115200)
+        monitor_baud = self.config.get('monitor_baud')
+        if not monitor_baud:
+            raise ValueError("monitor_baud not configured in config file")
         timeout = step.get('timeout', 30)
         prompt_pattern = step.get('prompt_pattern', '')
         skip_if_detected = step.get('skip_if_detected', False)
+        step_name = step.get('name', 'wait_for_prompt')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         # 检查是否已经检测到提示（自动流转）
         if skip_if_detected and prompt_pattern:
@@ -1783,6 +3372,9 @@ class ESPFlasher:
             if prompt_pattern in detected_prompts:
                 print(f"  ✓ 提示已在之前步骤中检测到: {prompt_pattern}")
                 print(f"  → 自动跳过，直接进入下一步...")
+                save_operation_history(f"Step: {step_name}", 
+                                      f"Prompt already detected: {prompt_pattern}, skipping", 
+                                      session_id)
                 return True
         
         # 获取测试状态配置（从父步骤或当前步骤）
@@ -1792,12 +3384,47 @@ class ESPFlasher:
         
         print(f"  等待提示: {prompt_pattern} (超时: {timeout}秒)")
         
-        monitor = SerialMonitor(port, monitor_baud)
-        if not monitor.open():
+        # 使用统一的日志文件
+        log_file = getattr(self, 'unified_log_file', None)
+        if log_file:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Step: {step_name} - Wait for Prompt\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s\n")
+            log_file.write(f"Prompt Pattern: {prompt_pattern}\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        
+        save_operation_history(f"Step: {step_name}", 
+                              f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s, Pattern: {prompt_pattern}", 
+                              session_id)
+        
+        # 使用共享的串口监控实例（复用之前步骤的串口连接）
+        monitor = self.get_shared_monitor(port, monitor_baud)
+        if not monitor:
             print("  ✗ 无法打开串口进行监控")
+            if log_file:
+                log_file.write(f"[ERROR] Failed to open serial port\n")
+                log_file.flush()
             return False
         
         try:
+            # 不清空输入缓冲区，保留之前步骤的数据
+            # 只清空输出缓冲区，确保发送命令时缓冲区干净
+            if monitor.serial_conn:
+                # 不清空输入缓冲区，保留设备发送的数据
+                # monitor.serial_conn.reset_input_buffer()  # 注释掉，保留数据
+                monitor.serial_conn.reset_output_buffer()
+            
+            if log_file:
+                # 检查是否是复用已有连接
+                if self.shared_monitor_port == port and self.shared_monitor_baud == monitor_baud:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reusing existing serial port connection (from previous step)\n")
+                else:
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, starting monitoring...\n")
+                log_file.write(f"[NOTE] Input buffer NOT cleared to preserve data from previous steps\n")
+                log_file.flush()
+            
             start_time = time.time()
             buffer = ""
             
@@ -1808,6 +3435,12 @@ class ESPFlasher:
                 if monitor.serial_conn and monitor.serial_conn.in_waiting > 0:
                     data = monitor.serial_conn.read(monitor.serial_conn.in_waiting)
                     text = data.decode('utf-8', errors='ignore')
+                    
+                    # 立即写入文件（原始数据，不做任何处理）
+                    if log_file:
+                        log_file.write(text)
+                        log_file.flush()
+                    
                     buffer += text
                     
                     # 按行处理
@@ -1817,7 +3450,8 @@ class ESPFlasher:
                         line_clean = ansi_escape.sub('', line)
                         line_clean = line_clean.strip()
                         if line_clean:
-                            print(f"  [日志] {line_clean}")
+                            # 来自设备的日志行，带时间戳
+                            ts_print(f"  [日志] {line_clean}")
                             
                             # 检查并更新测试状态
                             for state_name, state_config in test_states.items():
@@ -1835,33 +3469,60 @@ class ESPFlasher:
                             # 去除ANSI转义码后匹配
                             if prompt_pattern.lower() in line_clean.lower():
                                 print(f"  ✓ 检测到提示: {prompt_pattern}")
+                                if log_file:
+                                    log_file.write(f"\n[PROMPT DETECTED] {prompt_pattern}\n")
+                                    log_file.flush()
                                 # 记录检测到的提示
                                 self.procedure_state['detected_prompts'][prompt_pattern] = True
                                 monitor.close()
+                                if log_file:
+                                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED ===\n")
+                                    log_file.write(f"Prompt detected successfully\n")
+                                    log_file.write(f"Monitoring duration: {time.time() - start_time:.2f} seconds\n")
+                                    log_file.flush()
                                 return True
                 
-                time.sleep(0.05)  # 提高响应速度
+                time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
             
-            monitor.close()
+            # 不关闭串口，让后续步骤继续使用
+            # monitor.close()  # 注释掉，保持串口打开
             print(f"  ⚠️  超时未检测到提示: {prompt_pattern}")
+            if log_file:
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED (TIMEOUT) ===\n")
+                log_file.write(f"[WARNING] Timeout, prompt not detected: {prompt_pattern}\n")
+                log_file.write(f"Monitoring duration: {time.time() - start_time:.2f} seconds\n")
+                log_file.write(f"[NOTE] Serial port kept open for next steps\n")
+                log_file.flush()
             return False
             
         except Exception as e:
             print(f"  ✗ 等待提示时出错: {e}")
             import traceback
             traceback.print_exc()
-            monitor.close()
+            if log_file:
+                try:
+                    log_file.write(f"\n[ERROR] Step {step_name} failed: {e}\n")
+                    log_file.write(f"Traceback:\n{traceback.format_exc()}\n")
+                    log_file.flush()
+                except:
+                    pass
+            # 不关闭串口，让后续步骤继续使用（即使出错也保持打开）
+            # monitor.close()  # 注释掉，保持串口打开
             return False
     
     def _step_interactive_input(self, step):
         """交互式输入步骤"""
         port = self.config.get('serial_port')
-        monitor_baud = self.config.get('monitor_baud', 115200)
+        monitor_baud = self.config.get('monitor_baud')
+        if not monitor_baud:
+            raise ValueError("monitor_baud not configured in config file")
         prompt = step.get('prompt', '请输入:')
         fallback_to_config = step.get('fallback_to_config', False)
         config_key = step.get('config_key', '')
         config_files = step.get('config_files', [])
         send_to_device = step.get('send_to_device', False)
+        step_name = step.get('name', 'interactive_input')
+        session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         # 先从配置文件获取默认值
         default_value = None
@@ -1885,11 +3546,18 @@ class ESPFlasher:
         
         print(f"  交互式输入: {prompt}")
         
+        save_operation_history(f"Step: {step_name}", 
+                              f"Interactive input prompt: {prompt}, Default: {default_value if default_value else 'None'}", 
+                              session_id)
+        
         # 获取用户输入
         try:
             user_input = input(f"  {prompt_with_default}: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("  ✗ 用户取消输入")
+            save_operation_history(f"Step: {step_name} - Result", 
+                                  f"User cancelled input", 
+                                  session_id)
             return False
         
         # 如果用户输入为空，使用默认值
@@ -1897,11 +3565,20 @@ class ESPFlasher:
             if default_value:
                 user_input = default_value
                 print(f"  ✓ 使用默认值: {default_value}")
+                save_operation_history(f"Step: {step_name} - Input", 
+                                      f"Using default value: {default_value}", 
+                                      session_id)
             elif fallback_to_config:
                 print("  ⚠️  未在配置文件中找到默认值，且用户输入为空")
+                save_operation_history(f"Step: {step_name} - Result", 
+                                      f"Error: No default value found and user input is empty", 
+                                      session_id)
                 return False
             else:
                 print("  ✗ 输入为空")
+                save_operation_history(f"Step: {step_name} - Result", 
+                                      f"Error: Input is empty", 
+                                      session_id)
                 return False
         
         # 确保输入值被正确清理（去除所有空白字符，包括换行符）
@@ -1909,6 +3586,9 @@ class ESPFlasher:
         
         if not user_input:
             print("  ✗ 输入为空")
+            save_operation_history(f"Step: {step_name} - Result", 
+                                  f"Error: Input is empty after strip", 
+                                  session_id)
             return False
         
         print(f"  ✓ 输入值: {user_input}")
@@ -1918,6 +3598,9 @@ class ESPFlasher:
             monitor = SerialMonitor(port, monitor_baud)
             if not monitor.open():
                 print("  ✗ 无法打开串口发送数据")
+                save_operation_history(f"Step: {step_name} - Result", 
+                                      f"Error: Failed to open serial port for sending", 
+                                      session_id)
                 return False
             
             try:
@@ -1930,18 +3613,34 @@ class ESPFlasher:
                     # 显示发送的值（将 \r 和 \n 显示为可见字符，方便调试）
                     display_value = clean_input.replace('\r', '\\r').replace('\n', '\\n')
                     print(f"  ✓ 已发送到设备: {display_value}")
-                    monitor.close()
+                    save_operation_history(f"Step: {step_name} - Sent to Device", 
+                                          f"Sent: {display_value} (raw: {repr(clean_input)})", 
+                                          session_id)
+                    # 不关闭串口，让后续步骤继续使用
+                    # monitor.close()  # 注释掉，保持串口打开
                     return True
                 else:
                     print("  ✗ 发送到设备失败")
-                    monitor.close()
+                    save_operation_history(f"Step: {step_name} - Result", 
+                                          f"Error: Failed to send to device", 
+                                          session_id)
+                    # 不关闭串口，让后续步骤继续使用
+                    # monitor.close()  # 注释掉，保持串口打开
                     return False
             except Exception as e:
                 print(f"  ✗ 发送数据时出错: {e}")
                 import traceback
                 traceback.print_exc()
-                monitor.close()
+                save_operation_history(f"Step: {step_name} - Error", 
+                                      f"Exception: {e}", 
+                                      session_id)
+                # 不关闭串口，让后续步骤继续使用（即使出错也保持打开）
+                # monitor.close()  # 注释掉，保持串口打开
                 return False
+        else:
+            save_operation_history(f"Step: {step_name} - Input", 
+                                  f"User input: {user_input} (not sent to device)", 
+                                  session_id)
         
         return True
 
@@ -2101,6 +3800,7 @@ def run_tui_once():
     while True:
         try:
             clear_screen()
+            # 菜单相关输出不加时间戳（全局 print 已恢复为原始行为）
             print_header("ESP Auto Flashing Tool", 80)
             
             # Main menu options (formatted design)
@@ -2110,15 +3810,20 @@ def run_tui_once():
             main_menu_choices = [
                 ('  🔧  Develop Mode', 'develop_mode'),
                 ('  🏭  Factory Mode', 'factory_mode'),
+                ('  🔄  Restart', 'restart'),
                 ('  ❌  Exit', 'exit')
             ]
             
             main_menu = [
-                inquirer.List('action',
-                             message="",
-                             choices=main_menu_choices)
+                inquirer.List(
+                    'action',
+                    message="",
+                    choices=main_menu_choices,
+                    carousel=True  # Enable circular navigation
+                )
             ]
-            
+
+            # 直接调用 inquirer.prompt（现在全局 print 未被改写，菜单不会带时间戳）
             answer = inquirer.prompt(main_menu)
             if not answer:
                 break
@@ -2130,6 +3835,8 @@ def run_tui_once():
                 config_state = menu_mode_main(config_state, 'develop')
             elif action == 'factory_mode':
                 config_state = menu_mode_main(config_state, 'factory')
+            elif action == 'restart':
+                raise RestartTUI
             elif action == 'exit':
                 clear_screen()
                 print_header("Thank you for using", 80)
@@ -2178,6 +3885,12 @@ def menu_mode_main(config_state, mode_type):
             config_state['baud_rate'] = config_state.get('baud_rate') or default_config.get('baud_rate')
             config_state['firmware'] = config_state.get('firmware') or default_config.get('firmware_path')
             config_state['monitor_baud'] = config_state.get('monitor_baud') or default_config.get('monitor_baud')
+            # Load print_device_logs setting and update global variable
+            global PRINT_DEVICE_LOGS
+            PRINT_DEVICE_LOGS = default_config.get('print_device_logs', True)
+    
+    # Remember last selected action to restore selection when returning from operations
+    last_selected_action = None
     
     while True:
         try:
@@ -2203,16 +3916,39 @@ def menu_mode_main(config_state, mode_type):
             print_centered("Please select operation", 80)
             print()
             
-            mode_menu_choices = [
-                ('  ▶️  Start Flashing', 'start'),
-                ('  ⚙️  Settings', 'settings'),
-                ('  ←  Back to Main Menu', 'back')
-            ]
+            # Different menu for develop mode vs factory mode
+            if mode_type == 'develop':
+                # Develop mode: show operation options directly
+                mode_menu_choices = [
+                    ('  🔄  Program + Test', 'program_and_test'),
+                    ('  📝  Program Only', 'program_only'),
+                    ('  🧪  Test Only', 'test_only'),
+                    ('  ⚙️  Settings', 'settings'),
+                    ('  ←  Back to Main Menu', 'back')
+                ]
+            else:
+                # Factory mode: use original menu
+                mode_menu_choices = [
+                    ('  ▶️  Start Flashing', 'start'),
+                    ('  ⚙️  Settings', 'settings'),
+                    ('  ←  Back to Main Menu', 'back')
+                ]
+            
+            # Set default to last selected action if available
+            default_action = None
+            if last_selected_action:
+                # Check if last_selected_action is in choices
+                for _, val in mode_menu_choices:
+                    if val == last_selected_action:
+                        default_action = last_selected_action
+                        break
             
             mode_menu = [
                 inquirer.List('action',
                              message="",
-                             choices=mode_menu_choices)
+                             choices=mode_menu_choices,
+                             default=default_action,
+                             carousel=True)  # Enable circular navigation
             ]
             
             answer = inquirer.prompt(mode_menu)
@@ -2220,21 +3956,40 @@ def menu_mode_main(config_state, mode_type):
                 return config_state
             
             action = answer['action']
+            last_selected_action = action  # Remember current selection
             
-            if action == 'start':
-                if menu_start_flash(config_state):
-                    # Flashing successful
-                    continue_choice = [
-                        inquirer.Confirm('continue',
-                                        message="Flashing completed, continue?",
-                                        default=True)
-                    ]
-                    cont_answer = inquirer.prompt(continue_choice)
-                    if not cont_answer or not cont_answer.get('continue', False):
-                        return config_state
-                # Continue loop on flashing failure
-            elif action == 'settings':
-                config_state = menu_settings(config_state, mode_type)
+            # Handle actions based on mode
+            if mode_type == 'develop':
+                # Develop mode operations
+                if action == 'program_and_test':
+                    execute_program_and_test(config_state)
+                    # After operation, return to menu (user already pressed Enter in the function)
+                    continue
+                elif action == 'program_only':
+                    execute_program_only(config_state)
+                    # After operation, return to menu (user already pressed Enter in the function)
+                    continue
+                elif action == 'test_only':
+                    # 开发模式下：只运行测试流程（不烧录）
+                    execute_test_only(config_state)
+                    # After operation, return to menu (user already pressed Enter in the function)
+                    continue
+                elif action == 'settings':
+                    config_state = menu_settings(config_state, mode_type)
+            else:
+                # Factory mode: use original flow
+                if action == 'start':
+                    if menu_start_flash(config_state):
+                        continue_choice = [
+                            inquirer.Confirm('continue',
+                                            message="Flashing completed, continue?",
+                                            default=True)
+                        ]
+                        cont_answer = inquirer.prompt(continue_choice)
+                        if not cont_answer or not cont_answer.get('continue', False):
+                            return config_state
+                elif action == 'settings':
+                    config_state = menu_settings(config_state, mode_type)
                 
         except KeyboardInterrupt:
             return config_state
@@ -2298,6 +4053,8 @@ def save_config_to_file(config_state):
             existing_config['version_string'] = config_state['version_string']
         if config_state.get('device_code_rule'):
             existing_config['device_code_rule'] = config_state['device_code_rule']
+        if 'print_device_logs' in config_state:
+            existing_config['print_device_logs'] = config_state['print_device_logs']
         
         # Save to file
         with open(config_path, 'w', encoding='utf-8') as f:
@@ -2360,6 +4117,14 @@ def menu_settings(config_state, mode_type):
             current_monitor_baud = config_state.get('monitor_baud', '')
             current_version = config_state.get('version_string', '')
             current_rule = config_state.get('device_code_rule', '')
+            # Load print_device_logs from config file
+            config_path = config_state.get('config_path', 'config_develop.json')
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    current_print_logs = config.get('print_device_logs', True)
+            except Exception:
+                current_print_logs = True
             
             # Format firmware display (show filename only)
             firmware_display = 'Not set'
@@ -2386,7 +4151,8 @@ def menu_settings(config_state, mode_type):
                 ("Firmware", firmware_display),
                 ("Monitor Baud Rate", format_current_value(current_monitor_baud)),
                 ("Version String", format_current_value(current_version, 20)),
-                ("Device Code Rule", format_current_value(current_rule, 20))
+                ("Device Code Rule", format_current_value(current_rule, 20)),
+                ("Print Device Logs", "✓ Enabled" if current_print_logs else "✗ Disabled")
             ]
             print_config_table(preview_items, 80)
             print()
@@ -2402,6 +4168,7 @@ def menu_settings(config_state, mode_type):
                 ('  📊  Monitor Baud Rate', 'monitor_baud'),
                 ('  🏷️  Version String', 'version_string'),
                 ('  🔢  Device Code Rule', 'device_code_rule'),
+                ('  📝  Print Device Logs', 'print_device_logs'),
                 ('  🔄  Reload Default Configuration', 'reload_defaults'),
                 ('  ←  Back', 'back')
             ]
@@ -2419,7 +4186,8 @@ def menu_settings(config_state, mode_type):
                 inquirer.List('setting',
                              message="",
                              choices=settings_choices,
-                             default=default_value)
+                             default=default_value,
+                             carousel=True)  # Enable circular navigation
             ]
             
             answer = inquirer.prompt(settings_menu)
@@ -2455,6 +4223,9 @@ def menu_settings(config_state, mode_type):
                 save_config_to_file(config_state)
             elif setting == 'device_code_rule':
                 config_state = menu_set_device_code_rule(config_state)
+                save_config_to_file(config_state)
+            elif setting == 'print_device_logs':
+                config_state = menu_set_print_device_logs(config_state)
                 save_config_to_file(config_state)
                 
         except KeyboardInterrupt:
@@ -2511,7 +4282,8 @@ def menu_set_ports(config_state):
         inquirer.List('port',
                      message="Please select serial port device",
                      choices=port_choices,
-                     default=current_port if current_port in [p[1] for p in port_choices] else None)
+                     default=current_port if current_port in [p[1] for p in port_choices] else None,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(port_question)
@@ -2563,7 +4335,8 @@ def menu_set_flash_baud(config_state):
         inquirer.List('baud',
                      message="Please select flash baud rate",
                      choices=baud_choices,
-                     default=default_idx if default_idx is not None else None)
+                     default=default_idx if default_idx is not None else None,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(baud_question)
@@ -2637,7 +4410,8 @@ def menu_set_firmware(config_state):
         inquirer.List('firmware',
                      message="Please select firmware file",
                      choices=firmware_choices,
-                     default=default_idx if default_idx is not None else None)
+                     default=default_idx if default_idx is not None else None,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(firmware_question)
@@ -2695,7 +4469,8 @@ def menu_set_monitor_baud(config_state):
         inquirer.List('baud',
                      message="Please select Monitor baud rate",
                      choices=baud_choices,
-                     default=default_idx if default_idx is not None else None)
+                     default=default_idx if default_idx is not None else None,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(baud_question)
@@ -2780,7 +4555,8 @@ def menu_set_device_code_rule(config_state):
         inquirer.List('rule',
                      message="Please select encoding rule",
                      choices=rule_choices,
-                     default=default_idx if default_idx is not None else None)
+                     default=default_idx if default_idx is not None else None,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(rule_question)
@@ -2804,6 +4580,74 @@ def menu_set_device_code_rule(config_state):
     return config_state
 
 
+def menu_set_print_device_logs(config_state):
+    """Set print device logs setting"""
+    clear_screen()
+    print_header("Set Print Device Logs", 80)
+    
+    # Load default configuration
+    config_path = config_state.get('config_path', 'config_develop.json')
+    default_config = load_default_config(config_path)
+    default_print_logs = default_config.get('print_device_logs', True)
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            current_print_logs = current_config.get('print_device_logs', default_print_logs)
+    except Exception:
+        current_print_logs = default_print_logs
+    
+    # Display current and default values
+    print_section_header("Current Configuration", 80)
+    print()
+    print_config_table([
+        ("Current Setting", "✓ Enabled" if current_print_logs else "✗ Disabled"),
+        ("Default Setting", "✓ Enabled" if default_print_logs else "✗ Disabled")
+    ], 80)
+    print()
+    
+    print_centered("Control whether to print device logs to console", 80)
+    print_centered("(Logs are always saved to log files)", 80)
+    print()
+    
+    enable_question = [
+        inquirer.Confirm('enable',
+                        message="Enable print device logs?",
+                        default=current_print_logs)
+    ]
+    
+    answer = inquirer.prompt(enable_question)
+    if not answer:
+        return config_state
+    
+    # Save to config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    
+    config['print_device_logs'] = answer['enable']
+    
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"\n✓ Print device logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"  Configuration saved to: {config_path}")
+        
+        # Update global variable
+        global PRINT_DEVICE_LOGS
+        PRINT_DEVICE_LOGS = answer['enable']
+        
+        # Update config_state for consistency
+        config_state['print_device_logs'] = answer['enable']
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+    
+    return config_state
+
+
 def menu_config_mode(config_state):
     """Configure mode menu"""
     print("\n" + "-"*60)
@@ -2817,7 +4661,8 @@ def menu_config_mode(config_state):
                          ('Develop Mode (no encryption)', 'develop'),
                          ('Factory Mode (encrypted)', 'factory'),
                          ('← Back to Main Menu', 'back')
-                     ])
+                     ],
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(mode_question)
@@ -2887,7 +4732,8 @@ def menu_config_port(config_state):
     port_question = [
         inquirer.List('port',
                      message="Please select serial port device",
-                     choices=port_choices)
+                     choices=port_choices,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(port_question)
@@ -2950,7 +4796,8 @@ def menu_config_firmware(config_state):
     firmware_question = [
         inquirer.List('firmware',
                      message="Please select firmware file",
-                     choices=firmware_choices)
+                     choices=firmware_choices,
+                     carousel=True)  # Enable circular navigation
     ]
     
     answer = inquirer.prompt(firmware_question)
@@ -3023,6 +4870,1105 @@ def menu_view_config(config_state):
             print("Options: None")
     
     print("="*60)
+
+
+def execute_program_and_test(config_state):
+    """Execute program + test (full procedures)"""
+    clear_screen()
+    print_header("Program + Test", 80)
+    
+    # Create flasher instance
+    flasher = ESPFlasher(config_state['config_path'])
+    flasher.config['serial_port'] = config_state['port']
+    flasher.config['firmware_path'] = config_state['firmware']
+    
+    # Update config with state values
+    if config_state.get('baud_rate'):
+        flasher.config['baud_rate'] = config_state['baud_rate']
+    if config_state.get('monitor_baud'):
+        flasher.config['monitor_baud'] = config_state['monitor_baud']
+    if config_state.get('version_string'):
+        flasher.config['version_string'] = config_state['version_string']
+    if config_state.get('device_code_rule'):
+        flasher.config['device_code_rule'] = config_state['device_code_rule']
+    
+    # Ensure test_after_flash is enabled for procedures
+    flasher.config['test_after_flash'] = True
+    
+    # Record operation
+    save_operation_history("Program + Test Started", 
+                          f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
+                          flasher.session_id)
+    
+    # Display log directory info
+    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    print(f"📋 Session ID: {flasher.session_id}")
+    if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
+        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
+    
+    try:
+        # Check serial port first
+        if not check_port_exists(config_state['port']):
+            print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return False
+        
+        # Execute procedures (includes flash + test)
+        if 'procedures' in flasher.config and flasher.config['procedures']:
+            success = flasher.execute_procedures()
+        else:
+            print("\n⚠️  No procedures defined in config file, falling back to flash only")
+            success = flasher.flash_firmware()
+        
+        if success:
+            print("\n✓ Program + Test completed successfully")
+        else:
+            print("\n✗ Program + Test failed")
+        
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        
+        return success
+        
+    except KeyboardInterrupt:
+        print("\n\nUser interrupted operation")
+        return False
+    except Exception as e:
+        print(f"\n✗ Unexpected error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
+
+
+def execute_program_only(config_state):
+    """Execute program only (flash firmware without test)"""
+    clear_screen()
+    print_header("Program Only", 80)
+    
+    # Create flasher instance
+    flasher = ESPFlasher(config_state['config_path'])
+    flasher.config['serial_port'] = config_state['port']
+    flasher.config['firmware_path'] = config_state['firmware']
+    
+    # Update config with state values
+    if config_state.get('baud_rate'):
+        flasher.config['baud_rate'] = config_state['baud_rate']
+    if config_state.get('monitor_baud'):
+        flasher.config['monitor_baud'] = config_state['monitor_baud']
+    
+    # Disable test_after_flash for program only
+    flasher.config['test_after_flash'] = False
+    
+    # Record operation
+    save_operation_history("Program Only Started", 
+                          f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
+                          flasher.session_id)
+    
+    # Display log directory info
+    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    print(f"📋 Session ID: {flasher.session_id}\n")
+    
+    try:
+        # Check serial port first
+        if not check_port_exists(config_state['port']):
+            print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return False
+        
+        # Adjust flash parameters
+        flasher.adjust_flash_params()
+        
+        # Execute flash only
+        success = flasher.flash_firmware()
+        
+        if success:
+            print("\n✓ Program completed successfully")
+        else:
+            print("\n✗ Program failed")
+        
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        
+        return success
+        
+    except KeyboardInterrupt:
+        print("\n\nUser interrupted operation")
+        return False
+    except Exception as e:
+        print(f"\n✗ Unexpected error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
+
+
+def run_esptool_command(args):
+    """
+    直接调用 esptool，避免创建子进程。
+    使用 subprocess 调用 esptool，捕获 SystemExit。
+    """
+    import esptool
+    
+    print("\n================ esptool 调用 ================")
+    print("esptool 参数:", " ".join(args))
+    print("=============================================\n")
+    
+    old_argv = sys.argv
+    sys.argv = ["esptool.py"] + args
+    try:
+        esptool.main()
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 0
+        if code != 0:
+            print(f"esptool 退出码: {code}")
+        return code
+    finally:
+        sys.argv = old_argv
+    return 0
+
+
+def execute_test_only(config_state):
+    """执行测试（不烧录，使用 esptool run 命令启动并监控日志，通过关键字匹配判断自检状态）"""
+    # 不清屏，避免把之前菜单/日志全部擦掉，方便用户回看
+    print("\n" + "=" * 80)
+    print("Test Only - 自检模式（不烧录，使用 esptool run 启动并监控日志）")
+    print("=" * 80 + "\n")
+    
+    port = config_state.get('port')
+    monitor_baud = config_state.get('monitor_baud', 78400)  # 默认使用 78400
+    bootloader_baud = 115200  # bootloader 波特率固定为 115200
+    
+    if not port:
+        print("\n✗ Error: Serial port not configured")
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
+    
+    # Check serial port first
+    if not check_port_exists(port):
+        print(f"\n✗ Error: Serial port {port} does not exist")
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
+    
+    # Load config to get test patterns
+    config_path = config_state.get('config_path', 'config_develop.json')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception as e:
+        print(f"\n✗ Error loading config: {e}")
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
+    
+    # Load print_device_logs setting from config
+    global PRINT_DEVICE_LOGS
+    PRINT_DEVICE_LOGS = config.get('print_device_logs', True)  # Default to True if not set
+    
+    # Extract test configuration from config
+    log_patterns = {}
+    test_states = {}
+    extract_mac = False
+    extract_pressure = False
+    extract_rtc = False
+    monitor_button = False
+    button_test_timeout = 10.0
+    
+    # Find test procedure configuration
+    for procedure in config.get('procedures', []):
+        for step in procedure.get('steps', []):
+            if step.get('type') == 'conditional' and step.get('condition') == 'test_after_flash':
+                for test_step in step.get('on_condition_true', []):
+                    if test_step.get('type') == 'self_test':
+                        reset_step = None
+                        for s in test_step.get('steps', []):
+                            if s.get('type') == 'reset_and_monitor':
+                                reset_step = s
+                                break
+                        if reset_step:
+                            log_patterns = reset_step.get('log_patterns', {})
+                            test_states = reset_step.get('test_states', {})
+                            extract_mac = reset_step.get('extract_mac', False)
+                            extract_pressure = reset_step.get('extract_pressure', False)
+                            extract_rtc = reset_step.get('extract_rtc', False)
+                            monitor_button = reset_step.get('monitor_button', False)
+                            button_test_timeout = float(reset_step.get('button_test_timeout', 10))
+                        break
+    
+    # Create unified log file
+    session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_dir = Path(LOG_DIR)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_filepath = log_dir / f"test_only_{session_id}.txt"
+    
+    print(f"\n📁 Test log will be saved to: {log_filepath}")
+    print(f"📋 Session ID: {session_id}\n")
+    
+    # Initialize monitored data
+    monitored_data = {
+        'mac_address': None,
+        'pressure_sensor': None,
+        'rtc_time': None,
+        'button_test_result': None,
+        'button_prompt_detected': False,
+        'hw_version': None,
+        'serial_number': None,
+        'serial_number_input_success': False,
+        'model_number': None,
+        'model_number_result': None,
+        'factory_mode_detected': False,
+        'factory_config_complete': False
+    }
+    
+    # Flags for tracking test progress
+    factory_mode_detected = False
+    pressure_extracted = False
+    rtc_extracted = False
+    mac_extracted = False
+    button_detected = False
+    button_test_done = False
+    button_prompt_time = None
+    hw_version_sent = False
+    serial_number_sent = False
+    button_refresh_enabled = False  # Flag to enable dynamic button prompt refresh
+    last_button_refresh_time = None  # Last time button prompt was refreshed
+    last_sound_time = None  # Last time sound was played during button wait
+    sound_interval = 3.0  # Play sound every 3 seconds during button wait
+    user_exit_requested = False  # Flag to track if user pressed ESC to exit
+    hw_version_input_success = False  # Flag to track if hardware version input was successful
+    hw_version_retry_count = 0  # Counter for hardware version retry attempts
+    max_hw_version_retries = 3  # Maximum retry attempts for hardware version input
+    model_number_detected = False  # Flag to track if model number prompt was detected
+    model_number_sent = False  # Flag to track if model number was sent
+    model_number_input_success = False  # Flag to track if model number input was successful
+    model_number_prompt_time = None  # Time when model number prompt was detected
+    model_number_refresh_enabled = False  # Flag to enable dynamic model number prompt refresh
+    last_model_number_refresh_time = None  # Last time model number prompt was refreshed
+    last_model_number_sound_time = None  # Last time sound was played during model number wait
+    
+    detected_states = set()
+    
+    try:
+        # Open log file first
+        log_file = open(log_filepath, 'w', encoding='utf-8')
+        log_file.write(f"{'='*80}\n")
+        log_file.write(f"Test Only Session\n")
+        log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_file.write(f"Port: {port}, Monitor Baud: {monitor_baud}, Bootloader Baud: {bootloader_baud}\n")
+        log_file.write(f"{'='*80}\n\n")
+        log_file.flush()
+        
+        # Step 1: Use esptool run command to start user code
+        normalized_port = normalize_serial_port(port)
+        print(f"  → 使用 esptool run 命令启动用户程序...")
+        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Using esptool run command to start user code\n")
+        log_file.flush()
+        
+        # Record the time when run command starts
+        run_start_time = time.time()
+        
+        # Ensure serial port is not open (esptool needs exclusive access)
+        ser = None
+        
+        # Call esptool run command
+        print(f"  → 调用 esptool run（波特率: {bootloader_baud}）...")
+        run_result = run_esptool_command([
+            "--port",
+            normalized_port,
+            "--baud",
+            str(bootloader_baud),
+            "run",
+        ])
+        
+        # Record the time when run command completes
+        run_end_time = time.time()
+        run_duration = (run_end_time - run_start_time) * 1000
+        
+        if run_result != 0:
+            print(f"  ⚠️  esptool run 命令执行异常（退出码: {run_result}）")
+            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run returned code: {run_result}\n")
+        log_file.flush()
+        
+        print(f"  ✓ esptool run 完成（耗时 {run_duration:.0f}ms）")
+        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run completed in {run_duration:.0f}ms\n")
+        log_file.flush()
+        
+        # Step 2: Immediately open serial port for monitoring (using monitor baud rate)
+        # No delay - open immediately after run to capture all logs from the start
+        print(f"  → 立即打开串口监听日志: {normalized_port} (波特率: {monitor_baud})...")
+        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Immediately opening serial port for monitoring at {monitor_baud} baud\n")
+        log_file.flush()
+        
+        # Try to open serial port immediately, retry if port is still busy
+        max_retries = 5
+        retry_delay = 0.05  # 50ms between retries
+        ser = None
+        for retry in range(max_retries):
+            try:
+                ser = serial.Serial(
+                    port=normalized_port,
+                    baudrate=monitor_baud,
+                    timeout=0.1,
+                    write_timeout=1
+                )
+                break  # Successfully opened
+            except serial.SerialException as e:
+                if retry < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    # Last retry failed, raise the exception
+                    print(f"  ✗ 无法打开串口（重试 {max_retries} 次后失败）: {e}")
+                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Failed to open serial port after {max_retries} retries: {e}\n")
+                    log_file.flush()
+                    raise
+        
+        print("  ✓ 串口已打开，立即开始监听日志...\n")
+        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, immediately starting log monitoring\n")
+        log_file.flush()
+        
+        # Step 2: Single monitoring loop - all logs go to buffer, keyword matching for each line
+        buffer = ""  # Main buffer for all ESP logs
+        monitoring_start_time = time.time()  # Time when monitoring loop starts
+        start_time = monitoring_start_time  # For timeout calculation
+        timeout = 30.0  # Maximum monitoring time (30 seconds)
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        last_data_time = start_time
+        no_data_warning_printed = False
+        first_data_received = False
+        
+        print(f"  📊 开始监控日志（最长 {timeout:.0f} 秒，将循环比对关键字判断每项检测是否通过）...\n")
+        
+        while time.time() - start_time < timeout:
+            # Read available data from serial port
+            try:
+                # Check if there's data waiting first
+                if ser.in_waiting > 0:
+                    data = ser.read(ser.in_waiting)
+                    text = data.decode('utf-8', errors='ignore')
+                    last_data_time = time.time()
+                    no_data_warning_printed = False
+                    
+                    if not first_data_received:
+                        first_data_received = True
+                        # Calculate time from run command start to first data received
+                        elapsed_from_run = (time.time() - run_start_time) * 1000
+                        elapsed_from_monitoring = (time.time() - monitoring_start_time) * 1000
+                        print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
+                        log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] First data received: {elapsed_from_run:.0f}ms after run command, {elapsed_from_monitoring:.0f}ms after monitoring started\n")
+                        log_file.flush()
+                    
+                    # Immediately write raw data to log file
+                    log_file.write(text)
+                    log_file.flush()
+                    
+                    # Add to buffer
+                    buffer += text
+                else:
+                    # No data waiting, try blocking read with timeout
+                    data = ser.read(1024)
+                    if data:
+                        text = data.decode('utf-8', errors='ignore')
+                        last_data_time = time.time()
+                        no_data_warning_printed = False
+                        
+                        if not first_data_received:
+                            first_data_received = True
+                            # Calculate time from run command start to first data received
+                            elapsed_from_run = (time.time() - run_start_time) * 1000
+                            elapsed_from_monitoring = (time.time() - monitoring_start_time) * 1000
+                            print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
+                            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] First data received: {elapsed_from_run:.0f}ms after run command, {elapsed_from_monitoring:.0f}ms after monitoring started\n")
+                            log_file.flush()
+                        
+                        # Immediately write raw data to log file
+                        log_file.write(text)
+                        log_file.flush()
+                        
+                        # Add to buffer
+                        buffer += text
+                    else:
+                        # No data received, check if we've been waiting too long
+                        elapsed = time.time() - last_data_time
+                        if elapsed > 2.0 and not no_data_warning_printed:
+                            print(f"  ⚠️  等待设备输出日志中... (已等待 {elapsed:.1f}秒)")
+                            print(f"  [调试] 串口状态: is_open={ser.is_open}, in_waiting={ser.in_waiting}, baudrate={ser.baudrate}")
+                            no_data_warning_printed = True
+            except Exception as e:
+                print(f"  ⚠️  读取串口数据时出错: {e}")
+                log_file.write(f"[ERROR] Serial read error: {e}\n")
+                log_file.flush()
+                time.sleep(0.1)
+            
+            # Process complete lines from buffer
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
+                # Remove ANSI escape codes
+                line_clean = ansi_escape.sub('', line).strip()
+                
+                if line_clean:
+                    # Print log line with timestamp
+                    ts_print(f"  [日志] {line_clean}")
+                    
+                    # 1. Factory Mode detection
+                    if not factory_mode_detected:
+                        factory_patterns = test_states.get('factory_config_mode', {}).get('patterns', [])
+                        for pattern in factory_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Green color for pass: \033[32m ... \033[0m
+                                print(f"  \033[32m✓ 工厂模式: 已进入\033[0m")
+                                monitored_data['factory_mode_detected'] = True
+                                factory_mode_detected = True
+                                detected_states.add('factory_config_mode')
+                                log_file.write(f"[TEST STATUS] Factory Mode: PASSED\n")
+                                log_file.flush()
+                                break
+                    
+                    # 2. Pressure sensor test
+                    if not pressure_extracted:
+                        pressure_patterns = log_patterns.get('pressure_sensor_pass', [])
+                        for pattern in pressure_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['pressure_sensor'] = line_clean
+                                # Green color for pass
+                                print(f"  \033[32m✓ 压力传感器: OKAY\033[0m")
+                                log_file.write(f"[TEST STATUS] Pressure Sensor: PASSED - {line_clean}\n")
+                                log_file.flush()
+                                pressure_extracted = True
+                                detected_states.add('pressure_sensor_test')
+                                break
+                    
+                    # 3. RTC test
+                    if not rtc_extracted:
+                        rtc_patterns = log_patterns.get('rtc_pass', [])
+                        for pattern in rtc_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['rtc_time'] = line_clean
+                                # Green color for pass
+                                print(f"  \033[32m✓ RTC: OKAY\033[0m")
+                                log_file.write(f"[TEST STATUS] RTC: PASSED - {line_clean}\n")
+                                log_file.flush()
+                                rtc_extracted = True
+                                detected_states.add('rtc_test')
+                                break
+                    
+                    # 4. MAC address extraction
+                    if not mac_extracted and extract_mac:
+                        mac_patterns = log_patterns.get('mac_address', [])
+                        for pattern in mac_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line_clean, re.IGNORECASE)
+                                if mac_match:
+                                    monitored_data['mac_address'] = mac_match.group(0)
+                                    # Green color for pass
+                                    print(f"  \033[32m✓ MAC地址: {monitored_data['mac_address']}\033[0m")
+                                    log_file.write(f"[TEST STATUS] MAC Address: EXTRACTED - {monitored_data['mac_address']}\n")
+                                    log_file.flush()
+                                    mac_extracted = True
+                                    break
+                    
+                    # 5. Button prompt detection
+                    if monitor_button and not button_detected:
+                        button_patterns = log_patterns.get('button_prompt', [])
+                        for pattern in button_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['button_prompt_detected'] = True
+                                button_detected = True
+                                button_prompt_time = time.time()
+                                button_refresh_enabled = True
+                                last_button_refresh_time = time.time()
+                                last_sound_time = time.time()  # Initialize sound timer
+                                detected_states.add('waiting_button')
+                                # Initial prompt (will be refreshed dynamically)
+                                print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC退出]", end='', flush=True)
+                                log_file.write(f"[TEST STATUS] Button prompt detected, waiting for button press (press ESC to exit)\n")
+                                log_file.write(f"[DEBUG] Matched pattern: {pattern}, Line: {line_clean}\n")
+                                log_file.flush()
+                                # Play notification sound when button prompt is detected
+                                if SOUND_ENABLED:
+                                    play_notification_sound()
+                                    log_file.write(f"[SOUND] Notification sound played\n")
+                                    log_file.flush()
+                                break
+                    
+                    # 6. Hardware version format error detection
+                    if hw_version_sent and not hw_version_input_success:
+                        # Check for format error messages
+                        format_error_patterns = [
+                            "wrong format",
+                            "try again",
+                            "format error",
+                            "invalid format"
+                        ]
+                        for error_pattern in format_error_patterns:
+                            if error_pattern.lower() in line_clean.lower():
+                                hw_version_retry_count += 1
+                                if hw_version_retry_count <= max_hw_version_retries:
+                                    # Reset flag to allow retry
+                                    hw_version_sent = False
+                                    print(f"  \033[33m⚠️  硬件版本格式错误，正在重试 ({hw_version_retry_count}/{max_hw_version_retries})...\033[0m")
+                                    log_file.write(f"[RETRY] Hardware version format error detected, retrying ({hw_version_retry_count}/{max_hw_version_retries})\n")
+                                    log_file.flush()
+                                else:
+                                    print(f"  \033[31m✗ 硬件版本输入失败（已重试 {max_hw_version_retries} 次）\033[0m")
+                                    log_file.write(f"[ERROR] Hardware version input failed after {max_hw_version_retries} retries\n")
+                                    log_file.flush()
+                                    hw_version_input_success = False  # Mark as failed
+                                break
+                    
+                    # 6. Hardware version prompt - auto input
+                    if not hw_version_sent:
+                        hw_patterns = log_patterns.get('hardware_version_prompt', [])
+                        for pattern in hw_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # If button monitoring enabled, consider button test passed when HW prompt appears
+                                if monitor_button and button_detected and not button_test_done:
+                                    button_test_done = True
+                                    button_refresh_enabled = False  # Stop dynamic refresh
+                                    monitored_data['button_test_result'] = 'PASS'
+                                    # Clear the dynamic line and print green pass message
+                                    print("\r  \033[K\033[32m✓ 按键测试: OKAY\033[0m")  # \r to return to start, \033[K to clear line
+                                    log_file.write(f"[TEST STATUS] Button Test: PASSED\n")
+                                    log_file.flush()
+                                
+                                version_string = config_state.get('version_string') or config.get('version_string', '')
+                                if version_string:
+                                    time.sleep(0.3)
+                                    clean_input = version_string.replace('\n', '').replace('\r', '')
+                                    ser.write((clean_input + '\n').encode('utf-8'))
+                                    ser.flush()
+                                    # Green color for pass (only if first attempt, retry will show different message)
+                                    if hw_version_retry_count == 0:
+                                        print(f"  \033[32m✓ 硬件版本: 已输入 ({version_string.strip()})\033[0m")
+                                    else:
+                                        print(f"  \033[33m→ 硬件版本: 重新输入 ({version_string.strip()})\033[0m")
+                                    monitored_data['hw_version'] = version_string
+                                    log_file.write(f"[AUTO INPUT] Hardware Version: {version_string} (attempt {hw_version_retry_count + 1})\n")
+                                    log_file.flush()
+                                hw_version_sent = True
+                                # Don't set hw_version_input_success yet - wait for confirmation or error
+                                break
+                    
+                    # 6b. Hardware version input success detection (check for success indicator first, then fallback to serial number prompt)
+                    if hw_version_sent and not hw_version_input_success:
+                        # First, check for explicit success message (e.g., "Received Hardware Version")
+                        hw_success_patterns = log_patterns.get('hardware_version_success', [])
+                        success_detected = False
+                        for pattern in hw_success_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Hardware version was accepted (explicit success message)
+                                hw_version_input_success = True
+                                success_detected = True
+                                if hw_version_retry_count > 0:
+                                    print(f"  \033[32m✓ 硬件版本: 输入成功 ({monitored_data.get('hw_version', '').strip()}) [重试 {hw_version_retry_count} 次后成功]\033[0m")
+                                    log_file.write(f"[SUCCESS] Hardware version input accepted after {hw_version_retry_count} retries (detected: {pattern})\n")
+                                else:
+                                    print(f"  \033[32m✓ 硬件版本: 输入成功 ({monitored_data.get('hw_version', '').strip()})\033[0m")
+                                    log_file.write(f"[SUCCESS] Hardware version input accepted (detected: {pattern})\n")
+                                log_file.flush()
+                                break
+                        
+                        # If no explicit success message, fallback to checking for serial number prompt
+                        if not success_detected:
+                            sn_patterns = log_patterns.get('serial_number_prompt', [])
+                            for pattern in sn_patterns:
+                                if pattern.lower() in line_clean.lower():
+                                    # Hardware version was accepted (we're now at serial number prompt)
+                                    hw_version_input_success = True
+                                    if hw_version_retry_count > 0:
+                                        print(f"  \033[32m✓ 硬件版本: 输入成功 ({monitored_data.get('hw_version', '').strip()}) [通过序列号提示判断，重试 {hw_version_retry_count} 次后成功]\033[0m")
+                                        log_file.write(f"[SUCCESS] Hardware version input accepted after {hw_version_retry_count} retries (inferred from serial number prompt)\n")
+                                    else:
+                                        print(f"  \033[32m✓ 硬件版本: 输入成功 ({monitored_data.get('hw_version', '').strip()}) [通过序列号提示判断]\033[0m")
+                                        log_file.write(f"[SUCCESS] Hardware version input accepted (inferred from serial number prompt)\n")
+                                    log_file.flush()
+                                break
+                    
+                    # 7. Serial number prompt - auto input
+                    if not serial_number_sent:
+                        sn_patterns = log_patterns.get('serial_number_prompt', [])
+                        for pattern in sn_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                device_code_rule = config_state.get('device_code_rule') or config.get('device_code_rule', '')
+                                device_code = None
+                                
+                                if device_code_rule:
+                                    # Generate device code using rule
+                                    if device_code_rule == 'SN: YYMMDD+序号':
+                                        now = datetime.now()
+                                        date_str = now.strftime('%y%m%d')
+                                        seq = '001'
+                                        device_code = f"SN{date_str}{seq}"
+                                    elif device_code_rule == 'MAC后6位':
+                                        if monitored_data.get('mac_address'):
+                                            mac = monitored_data['mac_address'].replace(':', '').replace('-', '')
+                                            device_code = mac[-6:].upper()
+                                        else:
+                                            device_code = 'UNKNOWN'
+                                    else:
+                                        device_code = device_code_rule
+                                else:
+                                    device_code = config_state.get('default_sn') or config.get('default_sn', 'DEFAULT')
+                                
+                                if device_code:
+                                    time.sleep(0.3)
+                                    clean_input = device_code.replace('\n', '').replace('\r', '')
+                                    ser.write((clean_input + '\n').encode('utf-8'))
+                                    ser.flush()
+                                    # Green color for pass
+                                    print(f"  \033[32m✓ 序列号: 已输入 ({device_code})\033[0m")
+                                    monitored_data['serial_number'] = device_code
+                                    log_file.write(f"[AUTO INPUT] Serial Number: {device_code}\n")
+                                    log_file.flush()
+                                serial_number_sent = True
+                                break
+            
+                    # 7b. Serial number input success detection
+                    if serial_number_sent and not monitored_data.get('serial_number_input_success'):
+                        sn_success_patterns = log_patterns.get('serial_number_success', [])
+                        for pattern in sn_success_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Extract serial number from log if available
+                                sn_match = re.search(r'Received Serial Number:\s*(\S+)', line_clean, re.IGNORECASE)
+                                if sn_match:
+                                    monitored_data['serial_number'] = sn_match.group(1)
+                                monitored_data['serial_number_input_success'] = True
+                                print(f"  \033[32m✓ 序列号: 输入成功 ({monitored_data.get('serial_number', '')})\033[0m")
+                                log_file.write(f"[SUCCESS] Serial number input accepted (detected: {pattern})\n")
+                                log_file.flush()
+                                break
+                    
+                    # 8. Model number prompt - auto input with continuous reminder
+                    if not model_number_detected:
+                        model_number_patterns = log_patterns.get('model_number_prompt', [])
+                        for pattern in model_number_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                model_number_detected = True
+                                model_number_prompt_time = time.time()
+                                model_number_refresh_enabled = True
+                                last_model_number_refresh_time = time.time()
+                                last_model_number_sound_time = time.time()  # Initialize sound timer
+                                # Initial prompt (will be refreshed dynamically)
+                                print(f"  \033[33m📝 请输入设备号\033[0m (等待时间: 0.0s) [按ESC退出]", end='', flush=True)
+                                log_file.write(f"[TEST STATUS] Model number prompt detected, waiting for input (press ESC to exit)\n")
+                                log_file.write(f"[DEBUG] Matched pattern: {pattern}, Line: {line_clean}\n")
+                                log_file.flush()
+                                # Play notification sound when model number prompt is detected
+                                if SOUND_ENABLED:
+                                    play_notification_sound()
+                                    log_file.write(f"[SOUND] Notification sound played for model number prompt\n")
+                                    log_file.flush()
+                                break
+                    
+                    # 8b. Auto input model number when prompt is detected
+                    if model_number_detected and not model_number_sent:
+                        # Get model number from config
+                        model_number = config_state.get('mode_number') or config.get('mode_number', '')
+                        if model_number:
+                            time.sleep(0.3)
+                            clean_input = model_number.replace('\n', '').replace('\r', '')
+                            ser.write((clean_input + '\n').encode('utf-8'))
+                            ser.flush()
+                            # Green color for pass
+                            print(f"\r  \033[K\033[32m✓ 设备号: 已输入 ({model_number})\033[0m")
+                            monitored_data['model_number'] = model_number
+                            log_file.write(f"[AUTO INPUT] Model Number: {model_number}\n")
+                            log_file.flush()
+                            model_number_sent = True
+                            model_number_refresh_enabled = False  # Stop dynamic refresh after input
+                        else:
+                            print(f"\r  \033[K\033[31m✗ 设备号未配置，无法自动输入。\033[0m")
+                            log_file.write(f"[ERROR] Model number not configured, cannot auto-input.\n")
+                            log_file.flush()
+                            model_number_sent = True  # Mark as sent to prevent further attempts
+                    
+                    # 8c. Model number input success detection
+                    if model_number_sent and not model_number_input_success:
+                        # Check for success message or next prompt
+                        model_success_patterns = log_patterns.get('model_number_success', [])
+                        for pattern in model_success_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                model_number_input_success = True
+                                print(f"  \033[32m✓ 设备号: 输入成功 ({monitored_data.get('model_number', '').strip()})\033[0m")
+                                log_file.write(f"[SUCCESS] Model number input accepted (detected: {pattern})\n")
+                                log_file.flush()
+                                break
+                    
+                    # 9. Factory Configuration Complete detection
+                    if not monitored_data.get('factory_config_complete'):
+                        factory_complete_patterns = log_patterns.get('factory_config_complete', [])
+                        for pattern in factory_complete_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['factory_config_complete'] = True
+                                print(f"  \033[32m✓ 工厂配置完成\033[0m")
+                                log_file.write(f"[TEST STATUS] Factory Configuration Complete (detected: {pattern})\n")
+                                log_file.flush()
+                                break
+            
+            # Dynamic model number prompt refresh (3 times per second = every 333ms)
+            # No timeout - keep waiting until model number is input or user presses ESC
+            if model_number_refresh_enabled and model_number_prompt_time and not model_number_sent:
+                current_time = time.time()
+                elapsed = current_time - model_number_prompt_time
+                
+                # Refresh every 333ms (3 times per second)
+                if last_model_number_refresh_time is None or (current_time - last_model_number_refresh_time) >= 0.333:
+                    # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
+                    print(f"\r  \033[K\033[33m📝 请输入设备号\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
+                    last_model_number_refresh_time = current_time
+                
+                # Play sound every 3 seconds
+                if last_model_number_sound_time is None or (current_time - last_model_number_sound_time) >= sound_interval:
+                    if SOUND_ENABLED:
+                        play_notification_sound()
+                    last_model_number_sound_time = current_time
+                
+                # Check for ESC key press (non-blocking)
+                try:
+                    import select
+                    if sys.platform != 'win32':  # select only works on Unix-like systems
+                        if select.select([sys.stdin], [], [], 0)[0]:
+                            # There's input available
+                            import termios
+                            import tty
+                            # Save terminal settings
+                            old_settings = termios.tcgetattr(sys.stdin)
+                            try:
+                                # Set terminal to raw mode
+                                tty.setraw(sys.stdin.fileno())
+                                # Read one character
+                                ch = sys.stdin.read(1)
+                                if ch == '\x1b':  # ESC key
+                                    user_exit_requested = True
+                                    model_number_sent = True
+                                    model_number_refresh_enabled = False
+                                    monitored_data['model_number_result'] = 'USER_EXIT'
+                                    # Clear the dynamic line and print exit message
+                                    print(f"\r  \033[K\033[33m⚠️  设备号输入: 用户退出（按ESC）\033[0m")
+                                    log_file.write(f"[TEST STATUS] Model Number Input: USER_EXIT (ESC pressed)\n")
+                                    log_file.flush()
+                            finally:
+                                # Restore terminal settings
+                                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                except (ImportError, OSError, AttributeError):
+                    # select/termios not available (e.g., Windows or non-terminal), skip ESC detection
+                    pass
+            
+            # Dynamic button prompt refresh (3 times per second = every 333ms)
+            # No timeout - keep waiting until button is pressed or user presses ESC
+            if button_refresh_enabled and button_prompt_time and not button_test_done:
+                current_time = time.time()
+                elapsed = current_time - button_prompt_time
+                
+                # Refresh every 333ms (3 times per second)
+                if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= 0.333:
+                    # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
+                    print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
+                    last_button_refresh_time = current_time
+                
+                # Play sound every 3 seconds
+                if last_sound_time is None or (current_time - last_sound_time) >= sound_interval:
+                    if SOUND_ENABLED:
+                        play_notification_sound()
+                    last_sound_time = current_time
+                
+                # Check for ESC key press (non-blocking)
+                try:
+                    import select
+                    if sys.platform != 'win32':  # select only works on Unix-like systems
+                        if select.select([sys.stdin], [], [], 0)[0]:
+                            # There's input available
+                            import termios
+                            import tty
+                            # Save terminal settings
+                            old_settings = termios.tcgetattr(sys.stdin)
+                            try:
+                                # Set terminal to raw mode
+                                tty.setraw(sys.stdin.fileno())
+                                # Read one character
+                                ch = sys.stdin.read(1)
+                                if ch == '\x1b':  # ESC key
+                                    user_exit_requested = True
+                                    button_test_done = True
+                                    button_refresh_enabled = False
+                                    monitored_data['button_test_result'] = 'USER_EXIT'
+                                    # Clear the dynamic line and print exit message
+                                    print(f"\r  \033[K\033[33m⚠️  按键测试: 用户退出（按ESC）\033[0m")
+                                    log_file.write(f"[TEST STATUS] Button Test: USER_EXIT (ESC pressed)\n")
+                                    log_file.flush()
+                            finally:
+                                # Restore terminal settings
+                                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                except (ImportError, OSError, AttributeError):
+                    # select/termios not available (e.g., Windows or non-terminal), skip ESC detection
+                    pass
+            
+            # Check if user requested exit (ESC pressed)
+            if user_exit_requested:
+                print("\n  \033[33m⚠️  用户主动退出测试\033[0m")
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] User requested exit (ESC pressed)\n")
+                log_file.flush()
+                break
+            
+            # Early exit if all critical tests completed
+            # Note: Button test is now non-blocking (no timeout), so we don't wait for it
+            critical_tests_done = True
+            if extract_pressure and not pressure_extracted:
+                critical_tests_done = False
+            if extract_rtc and not rtc_extracted:
+                critical_tests_done = False
+            # Don't block on button test - it will wait indefinitely until button is pressed or user exits
+            # Only check if button test was already completed
+            # if monitor_button and not button_test_done:
+            #     critical_tests_done = False
+            if not hw_version_sent or not serial_number_sent:
+                critical_tests_done = False
+            
+            if critical_tests_done:
+                # If button test is still waiting, we can exit early (button test is non-blocking)
+                if monitor_button and button_detected and not button_test_done:
+                    # Button test is in progress but not blocking, allow early exit
+                    print("\n  ✓ 自检关键步骤已完成，提前结束日志监控（按键测试仍在等待中）")
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Self-test conditions met, stopping monitoring loop early (button test still waiting)\n")
+                else:
+                    print("\n  ✓ 自检关键步骤已完成，提前结束日志监控")
+                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Self-test conditions met, stopping monitoring loop early\n")
+                log_file.flush()
+                break
+            
+            time.sleep(0.001)  # Small delay for responsiveness
+        
+        # Check monitoring timeout (only if user didn't exit)
+        if not user_exit_requested:
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= timeout:
+                # Clear any active dynamic prompt line before printing timeout message
+                if button_refresh_enabled:
+                    print("\r  \033[K", end='', flush=True)
+                print(f"\n  \033[33m⏱️  监听超时（已监听 {elapsed_time:.1f} 秒）\033[0m")
+                log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Monitoring timeout after {elapsed_time:.1f} seconds\n")
+                log_file.flush()
+        else:
+            # User exited, clear any active dynamic prompt line
+            if button_refresh_enabled:
+                print("\r  \033[K", end='', flush=True)
+        
+        # Close serial port
+        if ser is not None and ser.is_open:
+            ser.close()
+        if log_file:
+            log_file.close()
+        
+        # Print test summary with pass/fail status for each test
+        print("\n" + "=" * 80)
+        print("测试结果汇总")
+        print("=" * 80)
+        
+        summary_items = []
+        
+        # MAC address
+        if extract_mac:
+            if monitored_data.get('mac_address'):
+                summary_items.append(("MAC地址", f"\033[32m✓ 通过: {monitored_data['mac_address']}\033[0m"))
+            else:
+                summary_items.append(("MAC地址", "\033[31m✗ 未检测到\033[0m"))
+        
+        # Factory mode
+        if monitored_data.get('factory_mode_detected'):
+            summary_items.append(("工厂模式", "\033[32m✓ 已进入\033[0m"))
+        else:
+            summary_items.append(("工厂模式", "\033[31m✗ 未检测到\033[0m"))
+        
+        # Pressure sensor test
+        if extract_pressure:
+            if monitored_data.get('pressure_sensor'):
+                summary_items.append(("压力传感器", f"\033[32m✓ 通过\033[0m"))
+            else:
+                summary_items.append(("压力传感器", "\033[31m✗ 未检测到\033[0m"))
+        
+        # RTC test
+        if extract_rtc:
+            if monitored_data.get('rtc_time'):
+                summary_items.append(("RTC测试", f"\033[32m✓ 通过\033[0m"))
+            else:
+                summary_items.append(("RTC测试", "\033[31m✗ 未检测到\033[0m"))
+        
+        # Button test
+        if monitor_button:
+            button_result = monitored_data.get('button_test_result')
+            if button_result == 'PASS':
+                summary_items.append(("按键测试", "\033[32m✓ 通过\033[0m"))
+            elif button_result == 'USER_EXIT':
+                summary_items.append(("按键测试", "\033[33m⚠️  用户退出（按ESC）\033[0m"))
+            elif button_result == 'TIMEOUT':
+                summary_items.append(("按键测试", "\033[33m✗ 超时（未检测到按键动作）\033[0m"))
+            else:
+                summary_items.append(("按键测试", "\033[31m✗ 未完成\033[0m"))
+        
+        # Hardware version
+        if hw_version_input_success and monitored_data.get('hw_version'):
+            summary_items.append(("硬件版本", f"\033[32m✓ 已输入: {monitored_data['hw_version'].strip()}\033[0m"))
+        elif monitored_data.get('hw_version') and not hw_version_input_success:
+            summary_items.append(("硬件版本", f"\033[31m✗ 输入失败: {monitored_data['hw_version'].strip()}\033[0m"))
+        else:
+            summary_items.append(("硬件版本", "\033[31m✗ 未输入\033[0m"))
+        
+        # Serial number
+        if monitored_data.get('serial_number_input_success') and monitored_data.get('serial_number'):
+            summary_items.append(("序列号", f"\033[32m✓ 已输入: {monitored_data['serial_number']}\033[0m"))
+        elif monitored_data.get('serial_number'):
+            summary_items.append(("序列号", f"\033[33m⚠️  已输入但未确认: {monitored_data['serial_number']}\033[0m"))
+        else:
+            summary_items.append(("序列号", "\033[31m✗ 未输入\033[0m"))
+        
+        # Model number
+        model_number_result = monitored_data.get('model_number_result')
+        if model_number_input_success and monitored_data.get('model_number'):
+            summary_items.append(("设备号", f"\033[32m✓ 已输入: {monitored_data['model_number']}\033[0m"))
+        elif model_number_result == 'USER_EXIT':
+            summary_items.append(("设备号", "\033[33m⚠️  用户退出（按ESC）\033[0m"))
+        elif model_number_detected:
+            summary_items.append(("设备号", "\033[31m✗ 未输入\033[0m"))
+        
+        # Factory Configuration Complete
+        if monitored_data.get('factory_config_complete'):
+            summary_items.append(("工厂配置", "\033[32m✓ 完成\033[0m"))
+        else:
+            summary_items.append(("工厂配置", "\033[31m✗ 未完成\033[0m"))
+        
+        if summary_items:
+            for label, value in summary_items:
+                print(f"  {label:15} : {value}")
+        else:
+            print("  (无测试结果)")
+        
+        # Calculate overall test result
+        total_tests = 0
+        passed_tests = 0
+        
+        if extract_mac:
+            total_tests += 1
+            if monitored_data.get('mac_address'):
+                passed_tests += 1
+        
+        total_tests += 1  # Factory mode
+        if monitored_data.get('factory_mode_detected'):
+            passed_tests += 1
+        
+        if extract_pressure:
+            total_tests += 1
+            if monitored_data.get('pressure_sensor'):
+                passed_tests += 1
+        
+        if extract_rtc:
+            total_tests += 1
+            if monitored_data.get('rtc_time'):
+                passed_tests += 1
+        
+        if monitor_button:
+            total_tests += 1
+            if monitored_data.get('button_test_result') == 'PASS':
+                passed_tests += 1
+        
+        total_tests += 1  # Hardware version
+        if hw_version_input_success and monitored_data.get('hw_version'):
+            passed_tests += 1
+        
+        total_tests += 1  # Serial number
+        if monitored_data.get('serial_number_input_success') and monitored_data.get('serial_number'):
+            passed_tests += 1
+        
+        # Model number
+        if model_number_detected:
+            total_tests += 1
+            if model_number_input_success and monitored_data.get('model_number'):
+                passed_tests += 1
+        
+        # Factory Configuration Complete
+        total_tests += 1
+        if monitored_data.get('factory_config_complete'):
+            passed_tests += 1
+        
+        print("=" * 80)
+        if total_tests > 0:
+            pass_rate = (passed_tests / total_tests) * 100
+            if passed_tests == total_tests:
+                # All tests passed - green
+                print(f"  总体结果: \033[32m{passed_tests}/{total_tests} 项通过 ({pass_rate:.1f}%)\033[0m")
+                print("  \033[32m✓ 所有检测项均通过\033[0m")
+            else:
+                # Some tests failed - yellow
+                print(f"  总体结果: \033[33m{passed_tests}/{total_tests} 项通过 ({pass_rate:.1f}%)\033[0m")
+                print(f"  \033[33m⚠️  有 {total_tests - passed_tests} 项未通过\033[0m")
+        print("=" * 80)
+        print(f"\n📁 完整日志已保存到: {log_filepath}")
+        
+        # Play completion sound when test is finished
+        if SOUND_ENABLED:
+            play_completion_sound()
+        
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        
+        return True
+        
+    except KeyboardInterrupt:
+        print("\n\n用户中断操作")
+        if 'ser' in locals() and ser is not None and ser.is_open:
+            ser.close()
+        if 'log_file' in locals():
+            log_file.close()
+        return False
+    except Exception as e:
+        print(f"\n✗ 发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        if 'ser' in locals() and ser is not None and ser.is_open:
+            ser.close()
+        if 'log_file' in locals():
+            log_file.close()
+        print("\nPress Enter to return...")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return False
 
 
 def menu_start_flash(config_state):
@@ -3123,10 +6069,21 @@ def menu_start_flash(config_state):
     clear_screen()
     print_header("Step 2/4: Start Flashing", 80)
     
-    # Create flasher instance
+    # Create flasher instance (will create session_id automatically)
     flasher = ESPFlasher(config_state['config_path'])
     flasher.config['serial_port'] = config_state['port']
     flasher.config['firmware_path'] = config_state['firmware']
+    
+    # 记录开始烧录操作
+    save_operation_history("Flash Session Started", 
+                          f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
+                          flasher.session_id)
+    
+    # 显示日志目录信息
+    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    print(f"📋 Session ID: {flasher.session_id}")
+    if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
+        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
     
     # If baud rate is set, use the set baud rate
     if config_state.get('baud_rate'):
@@ -3273,6 +6230,12 @@ def menu_start_flash(config_state):
     version_string = config_state.get('version_string', '')
     device_code_rule = config_state.get('device_code_rule', '')
     
+    # 记录监控开始
+    session_id = getattr(flasher, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+    save_operation_history("Serial Monitor Started", 
+                          f"Port: {config_state['port']}, Baud: {monitor_baud}, Version: {version_string}", 
+                          session_id)
+    
     monitor.start_monitoring(version_string, device_code_rule)
     
     # Wait for monitoring to complete (max 2 minutes)
@@ -3294,18 +6257,26 @@ def menu_start_flash(config_state):
     print(f"  Device Code: {device_info.get('device_code', 'Not obtained')}")
     print("-" * 80)
     
+    # 记录监控完成和设备信息
+    save_operation_history("Serial Monitor Completed", 
+                          f"MAC: {device_info.get('mac_address', 'N/A')}, SN: {device_info.get('sn', 'N/A')}, Version: {device_info.get('version', 'N/A')}", 
+                          session_id)
+    
     # ========== Step 4: Save to CSV ==========
     clear_screen()
     print_header("Step 4/4: Save Record", 80)
     
-    # Generate CSV filename (including mode)
+    # Generate CSV filename (including mode) - 保存到日志目录
     mode = config_state.get('mode', 'unknown')
-    csv_file = f"device_records_{mode}_{datetime.now().strftime('%Y%m%d')}.csv"
+    csv_filename = f"device_records_{mode}_{datetime.now().strftime('%Y%m%d')}.csv"
+    csv_file = get_log_file_path(csv_filename)
     
     if save_to_csv(device_info, csv_file):
-        print(f"✓ Record saved")
+        print(f"✓ Record saved to: {csv_file}")
+        save_operation_history("Device Record Saved", f"CSV file: {csv_file}", session_id)
     else:
         print("✗ Failed to save record")
+        save_operation_history("Device Record Save Failed", "Failed to save CSV", session_id)
     
     # ========== Complete ==========
     clear_screen()

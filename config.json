@@ -11,11 +11,180 @@
   "bootloader": null,
   "app_offset": "0x10000",
   "verify": true,
-  "reset_after_flash": true,
+  "reset_after_flash": false,
   "monitor_baud": 78400,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
   "serial_port_keywords": ["USB Serial", "Serial", "COM", "USB"],
   "exclude_port_patterns": ["debug-console", "wlan-debug", "Bluetooth", "HUAWEI", "n/a"],
-  "version_string": "P2V2\r"
+  "version_string": "P2V2\r",
+  "device_code_rule": null,
+  "print_device_logs": true,
+  "test_after_flash": false,
+  "procedures": [
+    {
+      "name": "standard_flash_procedure",
+      "description": "标准烧录流程 - 根据test_after_flash配置决定是否执行测试（包括读取MAC、复位并抓取日志、按钮测试、RTC/压力自检、自动输入硬件版本和序列号、保存本地数据库记录）",
+      "steps": [
+        {
+          "name": "check_uart",
+          "type": "check_uart",
+          "description": "环境确认 - 检查UART串口是否存在",
+          "timeout": 5,
+          "on_failure": "error"
+        },
+        {
+          "name": "flash_firmware",
+          "type": "flash_firmware",
+          "description": "执行固件烧录，烧录成功后保持bootloader状态",
+          "timeout": 60,
+          "on_failure": "error"
+        },
+        {
+          "name": "conditional_test",
+          "type": "conditional",
+          "description": "条件判断 - 如果test_after_flash为true则执行测试流程",
+          "condition": "test_after_flash",
+          "on_condition_true": [
+            {
+              "name": "test_after_flash_procedure",
+              "type": "self_test",
+              "description": "烧录后测试流程",
+              "steps": [
+                {
+                  "name": "get_esp_info",
+                  "type": "get_esp_info",
+                  "description": "通过esptool获取ESP信息（MAC地址）",
+                  "timeout": 10,
+                  "on_failure": "warning"
+                },
+                {
+                  "name": "reset_and_monitor",
+                  "type": "reset_and_monitor",
+                  "description": "复位设备并监控日志，检测复位成功标志，并在整个自检过程中持续解析日志（Factory Mode、RTC、压力传感器、按钮提示、硬件版本/序列号提示等）",
+                  "timeout": 60,
+                  "reset_detection_timeout": 5.0,
+                  "log_patterns": {
+                    "reset_success": [
+                      "rst:0x1",
+                      "POWERON",
+                      "boot:0xe",
+                      "SPI_FAST_FLASH_BOOT"
+                    ],
+                    "factory_config_mode": [
+                      "Factory Configuration Mode",
+                      "factory_config:"
+                    ],
+                    "rtc_pass": [
+                      "Time passed",
+                      "RTC Time now:"
+                    ],
+                    "pressure_sensor_pass": [
+                      "Pressure Sensor Calibration Value Ok",
+                      "Pressure Sensor Reading:"
+                    ],
+                    "button_prompt": [
+                      "Press button to continue",
+                      "button to continue",
+                      "Press button if",
+                      "Press button"
+                    ],
+                    "hardware_version_prompt": [
+                      "Enter Hardware Version:",
+                      "Enter hardware version:",
+                      "Hardware Version:"
+                    ],
+                    "hardware_version_success": [
+                      "Received Hardware Version",
+                      "Hardware Version received",
+                      "Hardware version accepted"
+                    ],
+                    "hardware_version_error": [
+                      "wrong format",
+                      "try again",
+                      "format error",
+                      "invalid format"
+                    ],
+                    "serial_number_prompt": [
+                      "Enter Serial Number:",
+                      "Enter serial number:",
+                      "Serial Number:",
+                      "Enter Device Code:",
+                      "Enter device code:"
+                    ],
+                    "model_number_prompt": [
+                      "Enter Model Number",
+                      "Enter model number",
+                      "Model Number:",
+                      "Enter Device Number",
+                      "Enter device number"
+                    ],
+                    "model_number_success": [
+                      "Received Model Number",
+                      "Model Number received",
+                      "Model number accepted"
+                    ],
+                    "serial_number_success": [
+                      "Received Serial Number",
+                      "Serial Number received",
+                      "Serial number accepted"
+                    ],
+                    "factory_config_complete": [
+                      "Factory Configuration Complete",
+                      "Factory configuration complete",
+                      "Configuration Complete"
+                    ]
+                  },
+                  "extract_mac": true,
+                  "extract_pressure": true,
+                  "extract_rtc": true,
+                  "monitor_button": true,
+                  "test_states": {
+                    "factory_config_mode": {
+                      "patterns": [
+                        "Factory Configuration Mode",
+                        "factory_config:"
+                      ],
+                      "message": "📋 进入工厂配置模式",
+                      "timeout": 2
+                    },
+                    "rtc_test": {
+                      "patterns": [
+                        "Time passed",
+                        "RTC Time now:"
+                      ],
+                      "message": "⏱️  RTC测试通过"
+                    },
+                    "pressure_sensor_test": {
+                      "patterns": [
+                        "Pressure Sensor Calibration Value Ok",
+                        "Pressure Sensor Reading:"
+                      ],
+                      "message": "📊 压力传感器测试通过"
+                    },
+                    "waiting_button": {
+                      "patterns": [
+                        "Press button to continue",
+                        "button to continue"
+                      ],
+                      "message": "🔘 等待用户按下按键（10s 内检测到按键动作视为通过）"
+                    }
+                  },
+                  "auto_advance_on": {
+                    "pattern": "Enter Hardware Version:",
+                    "description": "检测到硬件版本输入提示，自动进入下一步",
+                    "wait_for_button": true,
+                    "button_prompt": "Press button to continue"
+                  },
+                  "on_failure": "warning"
+                }
+              ],
+              "on_failure": "warning"
+            }
+          ],
+          "on_condition_false": []
+        }
+      ]
+    }
+  ]
 }

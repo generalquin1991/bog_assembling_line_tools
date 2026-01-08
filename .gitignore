@@ -27,4 +27,11 @@ Thumbs.db
 
 # ESP工具日志文件
 esptool_log_*.txt
+monitor_log_*.txt
 
+# 日志目录（包含所有日志和操作历史）
+logs/
+*.csv
+diagnose*.txt
+
+firmware/
