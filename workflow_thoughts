@@ -1,12 +1,10 @@
 dev mode：
 1. 先确认串口可连接。
 2. 再烧录固件，并确认烧录结果，烧录失败，则直接结束，成功，则保持 bootloader。
-3. 根据 config 设置，如果使能了 test_after_flash，则执行测试流程，否则结束。
 
 dev mode：
 1. 先确认串口可连接。
 2. 再烧录固件，并确认烧录结果，烧录失败，则直接结束，成功，则保持bootloader。
-3. 根据config设置，如果使能了test_after_flash， 则执行flash流程，否则结束
 4. test的流程
     0. 连接串口，并监控日志
     1. 尝试获取esp信息,通过esptool 获取mac地址

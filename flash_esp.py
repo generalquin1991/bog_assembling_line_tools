@@ -1940,12 +1940,6 @@ class ESPFlasher:
             condition_met = (condition_value == 'not_encrypted')
         elif condition == 'encrypted':
             condition_met = (condition_value == 'encrypted')
-        elif condition == 'test_after_flash':
-            # 检查配置中的 test_after_flash 设置
-            test_after_flash = self.config.get('test_after_flash', False)
-            condition_met = bool(test_after_flash)
-            condition_display_value = test_after_flash
-            print(f"  test_after_flash 配置值: {test_after_flash}")
         
         if condition_met:
             print(f"  ✓ 条件满足，执行 on_condition_true")
@@ -3797,6 +3791,219 @@ def menu_view_config(config_state):
     print("="*60)
 
 
+def find_procedure_by_name(config, procedure_name):
+    """从配置中查找指定名称的 procedure
+    
+    Args:
+        config: 配置字典
+        procedure_name: procedure 名称（如 'development_mode_procedure'）
+    
+    Returns:
+        找到的 procedure 字典，如果未找到返回 None
+    """
+    if 'procedures' not in config or not config['procedures']:
+        return None
+    
+    for procedure in config['procedures']:
+        if procedure.get('name') == procedure_name:
+            return procedure
+    
+    return None
+
+
+def find_step_by_type(steps, step_type):
+    """从步骤列表中查找指定类型的步骤
+    
+    Args:
+        steps: 步骤列表
+        step_type: 步骤类型（如 'check_uart', 'flash_firmware'）
+    
+    Returns:
+        找到的步骤字典，如果未找到返回 None
+    """
+    for step in steps:
+        if step.get('type') == step_type:
+            return step
+        # 递归查找子步骤
+        if 'steps' in step and step['steps']:
+            found = find_step_by_type(step['steps'], step_type)
+            if found:
+                return found
+    
+    return None
+
+
+def basic_check_uart(flasher, config_state):
+    """执行基础的 UART 检查步骤
+    
+    从配置文件的 procedures 中查找 check_uart 步骤并执行
+    
+    Args:
+        flasher: ESPFlasher 实例
+        config_state: 配置状态字典
+    
+    Returns:
+        bool: 成功返回 True，失败返回 False
+    """
+    config = flasher.config
+    
+    # 查找包含 check_uart 的 procedure（通常是 development_mode_procedure 或 factory_mode_procedure）
+    procedure = None
+    for proc in config.get('procedures', []):
+        if proc.get('name', '').endswith('_mode_procedure'):
+            procedure = proc
+            break
+    
+    if not procedure:
+        # 如果找不到 procedure，尝试直接检查串口
+        port = config_state.get('port') or config.get('serial_port')
+        if not port:
+            print("✗ Error: Serial port not configured")
+            return False
+        
+        if not check_port_exists(port):
+            print(f"✗ Error: Serial port {port} does not exist")
+            return False
+        
+        print(f"✓ Serial port exists: {port}")
+        return True
+    
+    # 从 procedure 中查找 check_uart 步骤
+    check_uart_step = find_step_by_type(procedure.get('steps', []), 'check_uart')
+    
+    if not check_uart_step:
+        # 如果找不到步骤，使用简单检查
+        port = config_state.get('port') or config.get('serial_port')
+        if not port:
+            print("✗ Error: Serial port not configured")
+            return False
+        
+        if not check_port_exists(port):
+            print(f"✗ Error: Serial port {port} does not exist")
+            return False
+        
+        print(f"✓ Serial port exists: {port}")
+        return True
+    
+    # 执行 check_uart 步骤
+    return flasher._step_check_uart(check_uart_step)
+
+
+def program(flasher, config_state):
+    """执行烧录步骤
+    
+    从配置文件的 procedures 中查找 flash_firmware 步骤并执行
+    
+    Args:
+        flasher: ESPFlasher 实例
+        config_state: 配置状态字典
+    
+    Returns:
+        bool: 成功返回 True，失败返回 False
+    """
+    config = flasher.config
+    
+    # 查找包含 flash_firmware 的 procedure（通常是 development_mode_procedure 或 factory_mode_procedure）
+    procedure = None
+    for proc in config.get('procedures', []):
+        if proc.get('name', '').endswith('_mode_procedure'):
+            procedure = proc
+            break
+    
+    if not procedure:
+        # 如果找不到 procedure，使用旧的 flash_firmware 方法
+        flasher.adjust_flash_params()
+        return flasher.flash_firmware()
+    
+    # 从 procedure 中查找 flash_firmware 步骤
+    flash_step = find_step_by_type(procedure.get('steps', []), 'flash_firmware')
+    
+    if not flash_step:
+        # 如果找不到步骤，使用旧的 flash_firmware 方法
+        flasher.adjust_flash_params()
+        return flasher.flash_firmware()
+    
+    # 先调整 flash 参数
+    flasher.adjust_flash_params()
+    
+    # 执行 flash_firmware 步骤
+    return flasher._step_flash_firmware(flash_step)
+
+
+def test(flasher, config_state):
+    """执行测试步骤
+    
+    在 dev 模式下：直接复用 Test Only 的测试流程；
+    在 factory 模式下：继续使用 procedures 中的测试流程。
+    
+    Args:
+        flasher: ESPFlasher 实例
+        config_state: 配置状态字典
+    
+    Returns:
+        bool: 成功返回 True，失败返回 False
+    """
+    config = flasher.config
+    mode = config.get('mode') or config_state.get('mode')
+    
+    # 开发模式：测试流程与 Test Only 完全一致
+    if mode == 'develop':
+        # 构造 Test Only 所需的精简 config_state
+        test_state = {
+            'port': config_state.get('port') or config.get('serial_port'),
+            'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
+            'config_path': flasher.config_path,
+            'mode_name': config_state.get('mode_name', 'Develop Mode')
+        }
+        return execute_test_only(test_state)
+    
+    # 生产模式：仍然使用 procedures 中的测试流程
+    # 查找测试 procedure（通常是 factory_test_procedure）
+    test_procedure = None
+    for proc in config.get('procedures', []):
+        if proc.get('name', '').endswith('_test_procedure'):
+            test_procedure = proc
+            break
+    
+    if not test_procedure:
+        print("⚠️  No test procedure found in config")
+        return False
+    
+    # 执行测试 procedure 的所有步骤
+    print(f"\nExecuting Test Procedure: {test_procedure.get('name', 'unknown')}")
+    print(f"Description: {test_procedure.get('description', '')}")
+    print("-" * 80)
+    
+    # 在统一日志文件中记录过程开始
+    if hasattr(flasher, 'unified_log_file') and flasher.unified_log_file:
+        flasher.unified_log_file.write(f"\n{'='*80}\n")
+        flasher.unified_log_file.write(f"Test Procedure: {test_procedure.get('name', 'unknown')}\n")
+        flasher.unified_log_file.write(f"Description: {test_procedure.get('description', '')}\n")
+        flasher.unified_log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        flasher.unified_log_file.write(f"{'='*80}\n\n")
+        flasher.unified_log_file.flush()
+    
+    # 记录流程开始
+    session_id = getattr(flasher, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
+    save_operation_history(f"Test Procedure Started: {test_procedure.get('name', 'unknown')}", 
+                          test_procedure.get('description', ''), 
+                          session_id)
+    
+    # 执行测试步骤
+    success = flasher._execute_steps(test_procedure.get('steps', []))
+    
+    if success:
+        save_operation_history(f"Test Procedure Completed: {test_procedure.get('name', 'unknown')}", 
+                              "Execution successful", 
+                              session_id)
+    else:
+        save_operation_history(f"Test Procedure Failed: {test_procedure.get('name', 'unknown')}", 
+                              "Execution failed", 
+                              session_id)
+    
+    return success
+
+
 def execute_program_and_test(config_state):
     """Execute program + test (full procedures)"""
     clear_screen()
@@ -3829,9 +4036,10 @@ def execute_program_and_test(config_state):
         print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
     
     try:
-        # Check serial port first
-        if not check_port_exists(config_state['port']):
-            print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
+        # 1. Basic check UART
+        print("\n[Step 1/3] Checking UART...")
+        if not basic_check_uart(flasher, config_state):
+            print("\n✗ UART check failed")
             print("\nPress Enter to return...")
             try:
                 input()
@@ -3839,17 +4047,29 @@ def execute_program_and_test(config_state):
                 pass
             return False
         
-        # Execute procedures (includes flash + test)
-        if 'procedures' in flasher.config and flasher.config['procedures']:
-            success = flasher.execute_procedures()
-        else:
-            print("\n⚠️  No procedures defined in config file, falling back to flash only")
-            success = flasher.flash_firmware()
+        # 2. Program (flash firmware)
+        print("\n[Step 2/3] Programming firmware...")
+        if not program(flasher, config_state):
+            print("\n✗ Program failed")
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return False
         
-        if success:
-            print("\n✓ Program + Test completed successfully")
-        else:
-            print("\n✗ Program + Test failed")
+        # 3. Test
+        print("\n[Step 3/3] Running tests...")
+        if not test(flasher, config_state):
+            print("\n✗ Test failed")
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return False
+        
+        print("\n✓ Program + Test completed successfully")
         
         print("\nPress Enter to return...")
         try:
@@ -3857,7 +4077,7 @@ def execute_program_and_test(config_state):
         except (KeyboardInterrupt, EOFError):
             pass
         
-        return success
+        return True
         
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
@@ -3890,9 +4110,6 @@ def execute_program_only(config_state):
     if config_state.get('monitor_baud'):
         flasher.config['monitor_baud'] = config_state['monitor_baud']
     
-    # Disable test_after_flash for program only
-    flasher.config['test_after_flash'] = False
-    
     # Record operation
     save_operation_history("Program Only Started", 
                           f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
@@ -3903,9 +4120,10 @@ def execute_program_only(config_state):
     print(f"📋 Session ID: {flasher.session_id}\n")
     
     try:
-        # Check serial port first
-        if not check_port_exists(config_state['port']):
-            print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
+        # 1. Basic check UART
+        print("\n[Step 1/2] Checking UART...")
+        if not basic_check_uart(flasher, config_state):
+            print("\n✗ UART check failed")
             print("\nPress Enter to return...")
             try:
                 input()
@@ -3913,11 +4131,9 @@ def execute_program_only(config_state):
                 pass
             return False
         
-        # Adjust flash parameters
-        flasher.adjust_flash_params()
-        
-        # Execute flash only
-        success = flasher.flash_firmware()
+        # 2. Program (flash firmware)
+        print("\n[Step 2/2] Programming firmware...")
+        success = program(flasher, config_state)
         
         if success:
             print("\n✓ Program completed successfully")
@@ -4035,45 +4251,21 @@ def execute_test_only(config_state):
         print(f"  ⚠️  警告: 配置文件 ({config_path}) 中没有 procedures 定义")
         print(f"  ⚠️  将无法自动判断测试结果，请在该配置文件中添加 procedures")
     else:
-        # Extract from current config's procedures
+        # 从 procedures 中递归查找任意一个 reset_and_monitor 步骤
+        reset_step = None
         for procedure in config.get('procedures', []):
-            for step in procedure.get('steps', []):
-                if step.get('type') == 'conditional' and step.get('condition') == 'test_after_flash':
-                    for test_step in step.get('on_condition_true', []):
-                        if test_step.get('type') == 'self_test':
-                            reset_step = None
-                            for s in test_step.get('steps', []):
-                                if s.get('type') == 'reset_and_monitor':
-                                    reset_step = s
-                                    break
-                            if reset_step:
-                                log_patterns = reset_step.get('log_patterns', {})
-                                test_states = reset_step.get('test_states', {})
-                                extract_mac = reset_step.get('extract_mac', False)
-                                extract_pressure = reset_step.get('extract_pressure', False)
-                                extract_rtc = reset_step.get('extract_rtc', False)
-                                monitor_button = reset_step.get('monitor_button', False)
-                                button_test_timeout = float(reset_step.get('button_test_timeout', 10))
-                            break
+            reset_step = find_step_by_type(procedure.get('steps', []), 'reset_and_monitor')
+            if reset_step:
+                break
         
-        # If still no patterns found, try to find from any procedure's reset_and_monitor step
-        if not log_patterns and not test_states:
-            for procedure in config.get('procedures', []):
-                for step in procedure.get('steps', []):
-                    if step.get('type') == 'reset_and_monitor':
-                        if not log_patterns:
-                            log_patterns = step.get('log_patterns', {})
-                        if not test_states:
-                            test_states = step.get('test_states', {})
-                        if not extract_mac:
-                            extract_mac = step.get('extract_mac', False)
-                        if not extract_pressure:
-                            extract_pressure = step.get('extract_pressure', False)
-                        if not extract_rtc:
-                            extract_rtc = step.get('extract_rtc', False)
-                        if not monitor_button:
-                            monitor_button = step.get('monitor_button', False)
-                        break
+        if reset_step:
+            log_patterns = reset_step.get('log_patterns', {})
+            test_states = reset_step.get('test_states', {})
+            extract_mac = reset_step.get('extract_mac', False)
+            extract_pressure = reset_step.get('extract_pressure', False)
+            extract_rtc = reset_step.get('extract_rtc', False)
+            monitor_button = reset_step.get('monitor_button', False)
+            button_test_timeout = float(reset_step.get('button_test_timeout', 10))
         
         # Debug: Print configuration status
         if log_patterns or test_states:
