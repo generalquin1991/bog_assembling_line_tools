@@ -4577,6 +4577,14 @@ def execute_test_only(config_state):
                                 pressure_value_match = re.search(r'Pressure Sensor Reading:\s*([\d.]+)\s*mbar', line_clean, re.IGNORECASE)
                                 if pressure_value_match:
                                     monitored_data['pressure_value_mbar'] = float(pressure_value_match.group(1))
+                                
+                                # 尝试从日志中提取温度值（例如 "2 mbar, 238 (0.1°C)" -> 238 * 0.1 = 23.8°C）
+
+                                # 直接用正则匹配并计算，避免浮点数精度问题
+                                temperature_match = re.search(r'(\d+)\s*\(0\.1°C\)', line_clean, re.IGNORECASE)
+                                if temperature_match:
+                                    monitored_data['temperature_celsius'] = round(int(temperature_match.group(1)) * 0.1, 1)
+                                
                                 # Green color for pass
                                 print(f"  \033[32m✓ 压力传感器: OKAY\033[0m")
                                 log_file.write(f"[TEST STATUS] Pressure Sensor: PASSED - {line_clean}\n")
@@ -4591,6 +4599,13 @@ def execute_test_only(config_state):
                         for pattern in rtc_patterns:
                             if pattern.lower() in line_clean.lower():
                                 monitored_data['rtc_time'] = line_clean
+                                
+                                # 尝试从日志中解析RTC日期和时间（例如 "RTC Time now: 22.11.99 22:22:01"）
+                                rtc_datetime_match = re.search(r'RTC Time now:\s*(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2}:\d{2})', line_clean, re.IGNORECASE)
+                                if rtc_datetime_match:
+                                    monitored_data['rtc_date'] = rtc_datetime_match.group(1)  # "22.11.99"
+                                    monitored_data['rtc_time_str'] = rtc_datetime_match.group(2)  # "22:22:01"
+                                
                                 # Green color for pass
                                 print(f"  \033[32m✓ RTC: OKAY\033[0m")
                                 log_file.write(f"[TEST STATUS] RTC: PASSED - {line_clean}\n")
@@ -5306,10 +5321,16 @@ def execute_test_only(config_state):
                     
                     # RTC 测试结果
                     if monitored_data.get('rtc_time'):
-                        record['rtc'] = {
+                        rtc_result = {
                             "status": "pass",
                             "log": monitored_data['rtc_time']
                         }
+                        # 如果解析到了日期和时间，添加到结果中
+                        if monitored_data.get('rtc_date'):
+                            rtc_result['date'] = monitored_data['rtc_date']
+                        if monitored_data.get('rtc_time_str'):
+                            rtc_result['time'] = monitored_data['rtc_time_str']
+                        record['rtc'] = rtc_result
                     else:
                         record['rtc'] = {
                             "status": "not_detected"
@@ -5323,7 +5344,10 @@ def execute_test_only(config_state):
                         }
                         # 如果有提取到压力数值，添加数值
                         if monitored_data.get('pressure_value_mbar') is not None:
-                            pressure_result['value_mbar'] = monitored_data['pressure_value_mbar']
+                            pressure_result['pressure_mbar'] = monitored_data['pressure_value_mbar']
+                        # 如果有提取到温度数值，添加数值
+                        if monitored_data.get('temperature_celsius') is not None:
+                            pressure_result['temperature_celsius'] = monitored_data['temperature_celsius']
                         record['pressure_sensor'] = pressure_result
                     else:
                         record['pressure_sensor'] = {
