@@ -20,6 +20,8 @@ import re
 import platform
 from datetime import datetime
 from pathlib import Path
+import io
+import contextlib
 
 # Import sound utilities
 try:
@@ -74,12 +76,22 @@ except ImportError:
 # 全局日志目录
 LOG_DIR = "logs"
 
+# 用于存放本地统计类数据（如 prog/test time & MAC 日志）的目录
+LOCAL_DATA_DIR = "local_data"
+
 
 def ensure_log_directory():
     """确保日志目录存在"""
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR, exist_ok=True)
     return LOG_DIR
+
+
+def ensure_local_data_directory():
+    """确保本地数据目录存在"""
+    if not os.path.exists(LOCAL_DATA_DIR):
+        os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
+    return LOCAL_DATA_DIR
 
 
 def get_log_file_path(filename):
@@ -1073,6 +1085,30 @@ class ESPFlasher:
                     # 跳过完全空的行
                     if not line.strip():
                         continue
+                    
+                    # 从日志中解析 MAC 地址（esptool 会在连接时输出 MAC 地址）
+                    # 格式可能是: "MAC:                68:25:dd:ab:3a:cc" 或 "MAC: 68:25:dd:ab:3a:cc"
+                    if 'MAC:' in line.upper():
+                        # 直接匹配 MAC 地址部分（6 组十六进制数字，用冒号或横线分隔）
+                        mac_match = re.search(r'MAC:\s*((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})', line, re.IGNORECASE)
+                        if mac_match:
+                            mac_address_raw = mac_match.group(1)  # group(1) 是 MAC 地址部分（不含 "MAC:"）
+                            # 统一格式为 XX:XX:XX:XX:XX:XX（冒号分隔，大写）
+                            mac_parts = re.findall(r'([0-9A-Fa-f]{2})', mac_address_raw)
+                            if len(mac_parts) == 6:
+                                mac_address = ':'.join(mac_parts).upper()
+                                # 保存到 flasher 实例中
+                                if not hasattr(self, 'procedure_state'):
+                                    self.procedure_state = {'monitored_data': {}}
+                                if 'monitored_data' not in self.procedure_state:
+                                    self.procedure_state['monitored_data'] = {}
+                                self.procedure_state['monitored_data']['mac_address'] = mac_address
+                                # 同时保存到 device_info
+                                if not hasattr(self, 'device_info'):
+                                    self.device_info = {}
+                                self.device_info['mac_address'] = mac_address
+                                # 调试输出
+                                print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address}")
                     
                     # 从日志中解析进度信息
                     result = parse_progress_from_line(line)
@@ -3830,8 +3866,67 @@ def program(flasher, config_state):
     # 先调整 flash 参数
     flasher.adjust_flash_params()
     
-    # 执行 flash_firmware 步骤
-    return flasher._step_flash_firmware(flash_step)
+    # 统计烧录耗时并记录到 prog_<MAC>_<timestamp>.txt
+    # MAC 地址会在烧录过程中从 esptool 输出中自动解析
+    start_time = time.time()
+    success = flasher._step_flash_firmware(flash_step)
+    duration = time.time() - start_time
+    
+    # 烧录完成后，从 flasher 中获取已解析的 MAC 地址（从 esptool 输出中提取的）
+    mac_address = "UNKNOWN"
+    # 1. 尝试从 procedure_state 获取（烧录过程中解析的）
+    if hasattr(flasher, 'procedure_state') and flasher.procedure_state.get('monitored_data', {}).get('mac_address'):
+        mac_address_raw = flasher.procedure_state['monitored_data']['mac_address']
+        mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
+        print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
+    # 2. 尝试从 device_info 获取
+    elif hasattr(flasher, 'device_info') and flasher.device_info.get('mac_address'):
+        mac_address_raw = flasher.device_info['mac_address']
+        mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
+        print(f"  ✓ 从 device_info 获取到 MAC 地址: {mac_address_raw} -> {mac_address}")
+    else:
+        # 调试：检查 flasher 的状态
+        if hasattr(flasher, 'procedure_state'):
+            print(f"  ⚠️  调试: procedure_state 存在，但未找到 mac_address")
+            print(f"  ⚠️  调试: procedure_state = {flasher.procedure_state}")
+        else:
+            print(f"  ⚠️  调试: procedure_state 不存在")
+        if hasattr(flasher, 'device_info'):
+            print(f"  ⚠️  调试: device_info 存在，但未找到 mac_address")
+            print(f"  ⚠️  调试: device_info = {flasher.device_info}")
+        else:
+            print(f"  ⚠️  调试: device_info 不存在")
+        print(f"  ⚠️  未能从烧录输出中解析 MAC 地址，使用 UNKNOWN")
+    
+    try:
+        # prog/test 统计日志统一写入 local_data 目录
+        ensure_local_data_directory()
+        # 生成时间戳
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        prog_log_path = os.path.join(LOCAL_DATA_DIR, f"prog_{mac_address}_{timestamp}.txt")
+        print(f"  📝 日志文件: {prog_log_path}")
+        with open(prog_log_path, "a", encoding="utf-8") as f:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            mode = flasher.config.get("mode", config_state.get("mode", "unknown"))
+            port = flasher.config.get("serial_port", config_state.get("port", ""))
+            firmware = flasher.config.get("firmware_path", config_state.get("firmware", ""))
+            record = {
+                "timestamp": ts,
+                "mode": mode,
+                "port": port,
+                "firmware": firmware,
+                "mac": mac_address,
+                "success": bool(success),
+                "duration_sec": round(duration, 3),
+            }
+            # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
+            json.dump(record, f, ensure_ascii=False, indent=2)
+            f.write("\n\n")
+    except Exception:
+        # 记录时间失败不影响主流程
+        pass
+    
+    return success
 
 
 def test(flasher, config_state):
@@ -3962,6 +4057,7 @@ def execute_program_and_test(config_state):
                 pass
             return False
         
+
         # 3. Test
         print("\n[Step 3/3] Running tests...")
         if not test(flasher, config_state):
@@ -3974,7 +4070,6 @@ def execute_program_and_test(config_state):
             return False
         
         print("\n✓ Program + Test completed successfully")
-        
         print("\nPress Enter to return...")
         try:
             input()
@@ -4043,6 +4138,10 @@ def execute_program_only(config_state):
             print("\n✓ Program completed successfully")
         else:
             print("\n✗ Program failed")
+
+        # Play completion sound when Program Only flow finishes
+        if SOUND_ENABLED:
+            play_completion_sound()
         
         print("\nPress Enter to return...")
         try:
@@ -4069,8 +4168,10 @@ def execute_program_only(config_state):
 
 def run_esptool_command(args):
     """
-    直接调用 esptool，避免创建子进程。
-    使用 subprocess 调用 esptool，捕获 SystemExit。
+    调用 esptool.run 子命令（如 run），并捕获其标准输出，便于上层解析 MAC 等信息。
+    
+    返回:
+        (exit_code, output_text)
     """
     import esptool
     
@@ -4080,16 +4181,24 @@ def run_esptool_command(args):
     
     old_argv = sys.argv
     sys.argv = ["esptool.py"] + args
+    buf = io.StringIO()
     try:
-        esptool.main()
-    except SystemExit as e:
-        code = e.code if isinstance(e.code, int) else 0
-        if code != 0:
-            print(f"esptool 退出码: {code}")
-        return code
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                esptool.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 0
     finally:
         sys.argv = old_argv
-    return 0
+    
+    output = buf.getvalue()
+    # 保持原有行为：仍然把 esptool 的输出打印到控制台
+    if output:
+        print(output, end="")
+    if code != 0:
+        print(f"esptool 退出码: {code}")
+    return code, output
 
 
 def execute_test_only(config_state):
@@ -4236,6 +4345,7 @@ def execute_test_only(config_state):
     last_model_number_sound_time = None  # Last time sound was played during model number wait
     
     detected_states = set()
+    overall_start_time = time.time()
     
     try:
         # Open log file first
@@ -4263,7 +4373,7 @@ def execute_test_only(config_state):
         
         # Call esptool run command
         print(f"  → 调用 esptool run（波特率: {bootloader_baud}）...")
-        run_result = run_esptool_command([
+        run_result, run_output = run_esptool_command([
             "--port",
             normalized_port,
             "--baud",
@@ -4279,6 +4389,22 @@ def execute_test_only(config_state):
             print(f"  ⚠️  esptool run 命令执行异常（退出码: {run_result}）")
             log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run returned code: {run_result}\n")
         log_file.flush()
+        
+        # 从 esptool run 的输出中解析 MAC 地址（如果固件打印了 MAC）
+        try:
+            mac_match = re.search(r'MAC:\s*((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2})', run_output or "", re.IGNORECASE)
+            if mac_match:
+                mac_raw = mac_match.group(1)
+                mac_parts = re.findall(r'([0-9A-Fa-f]{2})', mac_raw)
+                if len(mac_parts) == 6:
+                    mac_addr = ':'.join(mac_parts).upper()
+                    monitored_data['mac_address'] = mac_addr
+                    print(f"  ✓ 从 esptool run 输出中解析到 MAC 地址: {mac_addr}")
+                    log_file.write(f"[TEST STATUS] MAC Address from esptool run: {mac_addr}\n")
+                    log_file.flush()
+        except Exception:
+            # 解析失败不会影响主流程
+            pass
         
         print(f"  ✓ esptool run 完成（耗时 {run_duration:.0f}ms）")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run completed in {run_duration:.0f}ms\n")
@@ -4421,6 +4547,10 @@ def execute_test_only(config_state):
                         for pattern in pressure_patterns:
                             if pattern.lower() in line_clean.lower():
                                 monitored_data['pressure_sensor'] = line_clean
+                                # 尝试从日志中提取压力数值（例如 "Pressure Sensor Reading: 3 mbar, 237 (0.1°C)"）
+                                pressure_value_match = re.search(r'Pressure Sensor Reading:\s*([\d.]+)\s*mbar', line_clean, re.IGNORECASE)
+                                if pressure_value_match:
+                                    monitored_data['pressure_value_mbar'] = float(pressure_value_match.group(1))
                                 # Green color for pass
                                 print(f"  \033[32m✓ 压力传感器: OKAY\033[0m")
                                 log_file.write(f"[TEST STATUS] Pressure Sensor: PASSED - {line_clean}\n")
@@ -4445,7 +4575,9 @@ def execute_test_only(config_state):
                     
                     # 4. MAC address extraction
                     if not mac_extracted and extract_mac:
+                        # 首先尝试从配置的 pattern 中提取
                         mac_patterns = log_patterns.get('mac_address', [])
+                        found_via_pattern = False
                         for pattern in mac_patterns:
                             if pattern.lower() in line_clean.lower():
                                 mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line_clean, re.IGNORECASE)
@@ -4456,7 +4588,22 @@ def execute_test_only(config_state):
                                     log_file.write(f"[TEST STATUS] MAC Address: EXTRACTED - {monitored_data['mac_address']}\n")
                                     log_file.flush()
                                     mac_extracted = True
+                                    found_via_pattern = True
                                     break
+                        
+                        # 如果没有通过 pattern 找到，尝试直接从任何包含 MAC 格式的行中提取
+                        if not found_via_pattern:
+                            mac_match = re.search(r'MAC[:\s]*([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', line_clean, re.IGNORECASE)
+                            if mac_match:
+                                # 提取纯 MAC 地址部分
+                                mac_parts = re.findall(r'([0-9A-Fa-f]{2})', mac_match.group(0))
+                                if len(mac_parts) == 6:
+                                    monitored_data['mac_address'] = ':'.join(mac_parts).upper()
+                                    # Green color for pass
+                                    print(f"  \033[32m✓ MAC地址: {monitored_data['mac_address']}\033[0m")
+                                    log_file.write(f"[TEST STATUS] MAC Address: EXTRACTED - {monitored_data['mac_address']}\n")
+                                    log_file.flush()
+                                    mac_extracted = True
                     
                     # 5. Button prompt detection
                     if monitor_button and not button_detected:
@@ -4808,6 +4955,9 @@ def execute_test_only(config_state):
                 critical_tests_done = False
             if extract_rtc and not rtc_extracted:
                 critical_tests_done = False
+            # 必须检测到工厂配置完成日志，才认为自检关键步骤完成
+            if not monitored_data.get('factory_config_complete'):
+                critical_tests_done = False
             # Don't block on button test - it will wait indefinitely until button is pressed or user exits
             # Only check if button test was already completed
             # if monitor_button and not button_test_done:
@@ -5027,6 +5177,131 @@ def execute_test_only(config_state):
         except (KeyboardInterrupt, EOFError):
             pass
         return False
+    finally:
+        # 记录整个 Test Only 流程耗时到 test_<MAC>_<timestamp>.txt（无论调用来源是 T only 还是 P+T）
+        try:
+            duration = time.time() - overall_start_time
+            # prog/test 统计日志统一写入 local_data 目录
+            ensure_local_data_directory()
+            
+            # 获取 MAC 地址（从测试日志中提取的，测试过程中已解析到 monitored_data）
+            mac_address = "UNKNOWN"
+            if 'monitored_data' in locals() and monitored_data.get('mac_address'):
+                mac_address_raw = monitored_data['mac_address']
+                mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
+                print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
+            else:
+                print(f"  ⚠️  测试过程中未检测到 MAC 地址")
+            
+            # 生成时间戳
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            test_log_path = os.path.join(LOCAL_DATA_DIR, f"test_{mac_address}_{timestamp}.txt")
+            with open(test_log_path, "a", encoding="utf-8") as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # 优先使用 mode_name，如果没有则从 config 中获取 mode 并转换
+                mode_name = config_state.get("mode_name")
+                if not mode_name:
+                    # 尝试从 config 中获取 mode
+                    config_mode = config_state.get("mode") or (config.get("mode") if 'config' in locals() else None)
+                    if config_mode == "develop":
+                        mode_name = "Develop Mode"
+                    elif config_mode == "factory":
+                        mode_name = "Factory Mode"
+                    else:
+                        mode_name = "unknown"
+                # 构建测试结果记录，包含所有中间结果
+                record = {
+                    "timestamp": ts,
+                    "mode": mode_name,
+                    "port": port,
+                    "monitor_baud": monitor_baud,
+                    "mac": mac_address,
+                    "duration_sec": round(duration, 3),
+                }
+                
+                # 添加所有测试中间结果
+                if 'monitored_data' in locals():
+                    # MAC 地址
+                    if monitored_data.get('mac_address'):
+                        record['mac_address'] = monitored_data['mac_address']
+                    
+                    # 工厂模式
+                    record['factory_mode'] = monitored_data.get('factory_mode_detected', False)
+                    
+                    # RTC 测试结果
+                    if monitored_data.get('rtc_time'):
+                        record['rtc'] = {
+                            "status": "pass",
+                            "log": monitored_data['rtc_time']
+                        }
+                    else:
+                        record['rtc'] = {
+                            "status": "not_detected"
+                        }
+                    
+                    # 压力传感器测试结果
+                    if monitored_data.get('pressure_sensor'):
+                        pressure_result = {
+                            "status": "pass",
+                            "log": monitored_data['pressure_sensor']
+                        }
+                        # 如果有提取到压力数值，添加数值
+                        if monitored_data.get('pressure_value_mbar') is not None:
+                            pressure_result['value_mbar'] = monitored_data['pressure_value_mbar']
+                        record['pressure_sensor'] = pressure_result
+                    else:
+                        record['pressure_sensor'] = {
+                            "status": "not_detected"
+                        }
+                    
+                    # 按键测试结果
+                    button_result = monitored_data.get('button_test_result')
+                    if button_result:
+                        record['button_test'] = {
+                            "status": button_result.lower()  # PASS, TIMEOUT, USER_EXIT
+                        }
+                    else:
+                        record['button_test'] = {
+                            "status": "not_detected"
+                        }
+                    
+                    # 硬件版本
+                    if monitored_data.get('hw_version'):
+                        record['hardware_version'] = {
+                            "value": monitored_data['hw_version'].strip(),
+                            "input_success": hw_version_input_success if 'hw_version_input_success' in locals() else False
+                        }
+                    
+                    # 序列号
+                    if monitored_data.get('serial_number'):
+                        record['serial_number'] = {
+                            "value": monitored_data['serial_number'],
+                            "input_success": monitored_data.get('serial_number_input_success', False)
+                        }
+                    
+                    # 设备号
+                    if monitored_data.get('model_number'):
+                        record['model_number'] = {
+                            "value": monitored_data['model_number'],
+                            "input_success": model_number_input_success if 'model_number_input_success' in locals() else False
+                        }
+                    
+                    # 工厂配置完成状态（只有检测到完整的 Factory Configuration Complete 日志才算通过）
+                    if monitored_data.get('factory_config_complete'):
+                        record['factory_config_complete'] = {
+                            "status": "pass"
+                        }
+                    else:
+                        record['factory_config_complete'] = {
+                            "status": "not_detected"
+                        }
+                
+                # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
+                json.dump(record, f, ensure_ascii=False, indent=2)
+                f.write("\n\n")
+        except Exception:
+            # 记录失败不影响主流程
+            pass
 
 
 def menu_start_flash(config_state):
