@@ -155,6 +155,15 @@
               "extract_rtc": true,
               "monitor_button": true,
               "test_states": {
+                "application_mode": {
+                  "patterns": [
+                    "Device already setup",
+                    "skipping factory configuration",
+                    "already setup, skipping factory"
+                  ],
+                  "message": "⚠️  该设备已进入 application mode，无法再次启动测试",
+                  "action": "reject"
+                },
                 "factory_config_mode": {
                   "patterns": [
                     "Factory Configuration Mode",

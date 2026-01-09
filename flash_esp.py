@@ -3866,7 +3866,7 @@ def program(flasher, config_state):
     # 先调整 flash 参数
     flasher.adjust_flash_params()
     
-    # 统计烧录耗时并记录到 prog_<MAC>_<timestamp>.txt
+    # 统计烧录耗时并记录到 MAC_YYMMDD_HHMMSS.json（prog）
     # MAC 地址会在烧录过程中从 esptool 输出中自动解析
     start_time = time.time()
     success = flasher._step_flash_firmware(flash_step)
@@ -3901,9 +3901,10 @@ def program(flasher, config_state):
     try:
         # prog/test 统计日志统一写入 local_data 目录
         ensure_local_data_directory()
-        # 生成时间戳
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prog_log_path = os.path.join(LOCAL_DATA_DIR, f"prog_{mac_address}_{timestamp}.txt")
+        # 生成时间戳（文件名使用 YYMMDD_HHMMSS）
+        timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+        # 生成统一命名规则: YYMMDD_HHMMSS_MAC_FLASH.json
+        prog_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_FLASH.json")
         print(f"  📝 日志文件: {prog_log_path}")
         with open(prog_log_path, "a", encoding="utf-8") as f:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -4315,11 +4316,13 @@ def execute_test_only(config_state):
         'model_number': None,
         'model_number_result': None,
         'factory_mode_detected': False,
+        'application_mode_detected': False,
         'factory_config_complete': False
     }
     
     # Flags for tracking test progress
     factory_mode_detected = False
+    application_mode_detected = False
     pressure_extracted = False
     rtc_extracted = False
     mac_extracted = False
@@ -4346,6 +4349,7 @@ def execute_test_only(config_state):
     
     detected_states = set()
     overall_start_time = time.time()
+    test_rejected_due_to_app_mode = False  # Flag to indicate test was rejected because device is in application mode
     
     try:
         # Open log file first
@@ -4526,6 +4530,28 @@ def execute_test_only(config_state):
                 if line_clean:
                     # Print log line with timestamp
                     ts_print(f"  [日志] {line_clean}")
+                    
+                    # 0. Application Mode detection (must run before factory mode detection)
+                    if not application_mode_detected:
+                        app_state = test_states.get('application_mode', {})
+                        app_patterns = app_state.get('patterns', [])
+                        for pattern in app_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                application_mode_detected = True
+                                monitored_data['application_mode_detected'] = True
+                                detected_states.add('application_mode')
+                                msg = app_state.get('message') or "⚠️  检测到设备处于 Application Mode（已完成工厂配置），拒绝本次测试"
+                                action = str(app_state.get('action', '')).lower()
+                                # Yellow warning for application mode (already tested)
+                                print(f"  \033[33m{msg}\033[0m")
+                                log_file.write(f"[TEST STATUS] Application Mode: DETECTED (pattern: {pattern})\n")
+                                log_file.flush()
+                                if action == 'reject':
+                                    test_rejected_due_to_app_mode = True
+                                break
+                        # If已经确认是 application mode 且需要拒绝测试，就不再继续处理后续检测项
+                        if test_rejected_due_to_app_mode:
+                            break
                     
                     # 1. Factory Mode detection
                     if not factory_mode_detected:
@@ -4892,6 +4918,11 @@ def execute_test_only(config_state):
                     # select/termios not available (e.g., Windows or non-terminal), skip ESC detection
                     pass
             
+            # If device has been detected as application mode and test should be rejected,
+            # break the main monitoring loop as well (in case we exited only inner loop above)
+            if test_rejected_due_to_app_mode:
+                break
+            
             # Dynamic button prompt refresh (3 times per second = every 333ms)
             # No timeout - keep waiting until button is pressed or user presses ESC
             if button_refresh_enabled and button_prompt_time and not button_test_done:
@@ -4999,6 +5030,50 @@ def execute_test_only(config_state):
             ser.close()
         if log_file:
             log_file.close()
+        
+        # If device is in application mode and test was rejected, do not print normal summary.
+        # Instead, show a clear rejection message and return False.
+        if test_rejected_due_to_app_mode and application_mode_detected:
+            print("\n" + "=" * 80)
+            print("测试被拒绝")
+            print("=" * 80)
+            print("  该设备已经完成工厂配置，当前处于 Application Mode，无法重复执行自检。")
+            print("=" * 80)
+            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            
+            # Play completion sound when test is finished (even if rejected), to提示操作完成
+            if SOUND_ENABLED:
+                play_completion_sound()
+            
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            
+            return False
+        
+        # If neither factory mode nor application mode was detected within the monitoring window,
+        # treat this as an error for Test Only: we don't know the device state, so reject the test.
+        if (not monitored_data.get('factory_mode_detected')) and (not monitored_data.get('application_mode_detected')):
+            print("\n" + "=" * 80)
+            print("测试失败")
+            print("=" * 80)
+            print("  ✗ 在 30 秒监控时间内，未检测到工厂模式日志，也未检测到“已完成工厂配置”的标志。")
+            print("  ✗ 无法确定设备当前模式，本次自检已被拒绝。")
+            print("=" * 80)
+            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            
+            if SOUND_ENABLED:
+                play_completion_sound()
+            
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            
+            return False
         
         # Print test summary with pass/fail status for each test
         print("\n" + "=" * 80)
@@ -5178,7 +5253,7 @@ def execute_test_only(config_state):
             pass
         return False
     finally:
-        # 记录整个 Test Only 流程耗时到 test_<MAC>_<timestamp>.txt（无论调用来源是 T only 还是 P+T）
+        # 记录整个 Test Only 流程耗时到 MAC_YYMMDD_HHMMSS.json（无论调用来源是 T only 还是 P+T）
         try:
             duration = time.time() - overall_start_time
             # prog/test 统计日志统一写入 local_data 目录
@@ -5193,9 +5268,10 @@ def execute_test_only(config_state):
             else:
                 print(f"  ⚠️  测试过程中未检测到 MAC 地址")
             
-            # 生成时间戳
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            test_log_path = os.path.join(LOCAL_DATA_DIR, f"test_{mac_address}_{timestamp}.txt")
+            # 生成时间戳（文件名使用 YYMMDD_HHMMSS）
+            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+            # 生成统一命名规则: YYMMDD_HHMMSS_MAC_TEST.json
+            test_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_TEST.json")
             with open(test_log_path, "a", encoding="utf-8") as f:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 # 优先使用 mode_name，如果没有则从 config 中获取 mode 并转换
