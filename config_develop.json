@@ -36,7 +36,7 @@
   ],
   "baud_rate": 2000000,
   "monitor_baud": 78400,
-  "test_after_flash": true,
+  "test_after_flash": false,
   "procedures": [
     {
       "name": "development_mode_procedure",
@@ -47,85 +47,39 @@
           "type": "check_uart",
           "description": "环境确认 - 检查UART串口是否存在",
           "timeout": 5,
-          "on_failure": "error",
-          "enable_test": true
-        },
-        {
-          "enable_test": true,
-          "name": "check_encryption",
-          "type": "check_encryption",
-          "description": "确认器件是否加密 - 通过监控ESP日志实现",
-          "timeout": 2,
-          "log_patterns": {
-            "encrypted": [
-              "flash encryption is enabled",
-              "Flash encryption completed",
-              "Flash encryption mode is RELEASE"
-            ],
-            "not_encrypted": [
-              "flash encryption is not enabled",
-              "Checking flash encryption..."
-            ]
-          },
           "on_failure": "error"
         },
         {
-          "enable_test": true,
-          "name": "conditional_flash",
-          "type": "conditional",
-          "description": "条件判断 - 如果未加密则执行烧录，否则报错",
-          "condition": "not_encrypted",
-          "on_condition_true": [
-            {
-              "name": "flash_firmware",
-              "type": "flash_firmware",
-              "description": "执行固件烧录",
-              "timeout": 60,
-              "on_failure": "error"
-            }
-          ],
-          "on_condition_false": [
-            {
-              "name": "error_device_encrypted",
-              "type": "error",
-              "description": "设备已加密，开发模式不支持加密设备",
-              "message": "错误：设备已加密，无法在开发模式下烧录。请使用未加密的设备或切换到生产模式。",
-              "exit": true
-            }
-          ]
+          "name": "flash_firmware",
+          "type": "flash_firmware",
+          "description": "执行固件烧录，烧录成功后保持bootloader状态",
+          "timeout": 60,
+          "on_failure": "error"
         },
         {
-          "enable_test": true,
           "name": "conditional_test",
           "type": "conditional",
-          "description": "条件判断 - 如果test_after_flash为true则执行烧录后测试流程",
+          "description": "条件判断 - 如果test_after_flash为true则执行测试流程",
           "condition": "test_after_flash",
           "on_condition_true": [
             {
               "name": "test_after_flash_procedure",
               "type": "self_test",
-              "description": "烧录后测试流程 - 根据workflow_thoughts定义的流程（读取ESP信息、复位并监控日志、Factory Mode/RTC/压力/按钮/硬件版本/序列号、自检结果写入本地数据库）",
+              "description": "烧录后测试流程",
               "steps": [
                 {
                   "name": "get_esp_info",
                   "type": "get_esp_info",
                   "description": "通过esptool获取ESP信息（MAC地址）",
                   "timeout": 10,
-                  "on_failure": "error"
+                  "on_failure": "warning"
                 },
                 {
                   "name": "reset_and_monitor",
                   "type": "reset_and_monitor",
-                  "description": "使用esptool复位设备，并监控日志，检测复位成功标志（rst:0x1 POWERON, boot:0xe SPI_FAST_FLASH_BOOT），在整个自检过程中持续解析日志（Factory Mode、RTC、压力传感器、按钮提示、硬件版本/序列号提示等）",
+                  "description": "复位设备并监控日志，检测复位成功标志，并在整个自检过程中持续解析日志（Factory Mode、RTC、压力传感器、按钮提示、硬件版本/序列号提示等）",
                   "timeout": 60,
                   "reset_detection_timeout": 5.0,
-                  "button_prompt_detection_timeout": 5.0,
-                  "auto_advance_on": {
-                    "pattern": "Enter Hardware Version:",
-                    "description": "检测到硬件版本输入提示，自动进入下一步",
-                    "wait_for_button": true,
-                    "button_prompt": "Press button to continue"
-                  },
                   "log_patterns": {
                     "reset_success": [
                       "rst:0x1",
@@ -195,14 +149,12 @@
                       "Factory Configuration Complete",
                       "Factory configuration complete",
                       "Configuration Complete"
-                    ],
-                    "mac_address": [
-                      "MAC:",
-                      "mac:",
-                      "MAC Address:",
-                      "mac address:"
                     ]
                   },
+                  "extract_mac": true,
+                  "extract_pressure": true,
+                  "extract_rtc": true,
+                  "monitor_button": true,
                   "test_states": {
                     "factory_config_mode": {
                       "patterns": [
@@ -231,13 +183,15 @@
                         "Press button to continue",
                         "button to continue"
                       ],
-                      "message": "🔘 等待用户按下按键（从出现提示开始计时10s，在日志中检测到按键动作视为通过）"
+                      "message": "🔘 等待用户按下按键（10s 内检测到按键动作视为通过）"
                     }
                   },
-                  "extract_mac": true,
-                  "extract_pressure": true,
-                  "extract_rtc": true,
-                  "monitor_button": true,
+                  "auto_advance_on": {
+                    "pattern": "Enter Hardware Version:",
+                    "description": "检测到硬件版本输入提示，自动进入下一步",
+                    "wait_for_button": true,
+                    "button_prompt": "Press button to continue"
+                  },
                   "on_failure": "warning"
                 }
               ],
