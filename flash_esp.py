@@ -517,10 +517,6 @@ class ESPFlasher:
             print(f"  ⚠️  Unable to create unified log file: {e}")
             self.unified_log_file = None
         
-        # 创建共享的串口监控实例（所有步骤共享，避免关闭和重新打开导致数据丢失）
-        self.shared_monitor = None
-        self.shared_monitor_port = None
-        self.shared_monitor_baud = None
         # 记录初始化操作
         save_operation_history("ESPFlasher Initialized", 
                               f"Config: {config_path}, Session ID: {self.session_id}", 
@@ -1508,48 +1504,6 @@ class ESPFlasher:
             print(f"\n✗ 固件烧录失败: {e}")
             return False
     
-    def get_shared_monitor(self, port, baud_rate):
-        """获取或创建共享的串口监控实例（自动规范化设备路径）"""
-        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
-        normalized_port = normalize_serial_port(port)
-        
-        # 如果串口和波特率相同，且监控实例已存在且打开，则复用
-        if (self.shared_monitor and 
-            self.shared_monitor_port == normalized_port and 
-            self.shared_monitor_baud == baud_rate and
-            self.shared_monitor.serial_conn and 
-            self.shared_monitor.serial_conn.is_open):
-            return self.shared_monitor
-        
-        # 如果已有监控实例但串口不同，先关闭
-        if self.shared_monitor:
-            try:
-                self.shared_monitor.close()
-            except:
-                pass
-        
-        # 创建新的监控实例（使用规范化后的端口）
-        self.shared_monitor = SerialMonitor(normalized_port, baud_rate)
-        self.shared_monitor_port = normalized_port
-        self.shared_monitor_baud = baud_rate
-        
-        if not self.shared_monitor.open():
-            self.shared_monitor = None
-            return None
-        
-        return self.shared_monitor
-    
-    def close_shared_monitor(self):
-        """关闭共享的串口监控实例"""
-        if self.shared_monitor:
-            try:
-                self.shared_monitor.close()
-            except:
-                pass
-            self.shared_monitor = None
-            self.shared_monitor_port = None
-            self.shared_monitor_baud = None
-    
     def close_unified_log(self):
         """关闭统一的日志文件"""
         if hasattr(self, 'unified_log_file') and self.unified_log_file:
@@ -1635,9 +1589,6 @@ class ESPFlasher:
         save_operation_history("All Procedures Completed", 
                               "All procedures executed successfully", 
                               self.session_id)
-        
-        # 关闭共享的串口监控实例
-        self.close_shared_monitor()
         
         # 关闭统一日志文件
         self.close_unified_log()
@@ -1961,10 +1912,9 @@ class ESPFlasher:
         timeout = step.get('timeout', 300)
         print(f"  执行固件烧录 (超时: {timeout}秒)")
         
-        # 在烧录前关闭之前打开的串口，让 esptool 能够独占串口
+        # 在烧录前稍作等待，确保之前可能的串口操作已经完成
         # esptool 需要独占串口才能正确连接设备并自动处理复位
-        print("  → 关闭之前打开的串口，让 esptool 独占使用...")
-        self.close_shared_monitor()
+        print("  → 确保串口空闲，让 esptool 独占使用...")
         time.sleep(0.2)  # 短暂等待，确保串口完全释放
         
         # 在procedures流程中，烧录后不自动复位，由后续步骤处理
@@ -1972,41 +1922,6 @@ class ESPFlasher:
         self.config['reset_after_flash'] = False  # 临时设置为False，不自动复位
         try:
             result = self.flash_firmware()
-            
-            # 烧录完成后，立即切换到监控波特率并开始监控（为后续reset_and_monitor步骤做准备）
-            if result:
-                port = self.config.get('serial_port')
-                monitor_baud = self.config.get('monitor_baud')
-                if not monitor_baud:
-                    raise ValueError("monitor_baud not configured in config file")
-                print(f"\n  → 烧录完成，立即切换到监控波特率 {monitor_baud}...")
-                
-                # 获取或创建共享的串口监控实例，并切换到监控波特率
-                monitor = self.get_shared_monitor(port, monitor_baud)
-                if monitor and monitor.serial_conn:
-                    current_baud = monitor.serial_conn.baudrate
-                    if current_baud != monitor_baud:
-                        print(f"  → 切换波特率: {current_baud} → {monitor_baud}")
-                        monitor.serial_conn.close()
-                        time.sleep(0.2)
-                        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
-                        normalized_port = normalize_serial_port(port)
-                        monitor.serial_conn = serial.Serial(
-                            port=normalized_port,
-                            baudrate=monitor_baud,
-                            timeout=0.1,  # 减少超时时间，提高响应速度（像 ESP-IDF monitor）
-                            write_timeout=1
-                        )
-                        time.sleep(0.3)
-                        print(f"  ✓ 已切换到监控波特率 {monitor_baud}，准备开始监控")
-                    else:
-                        print(f"  ✓ 串口已使用监控波特率 {monitor_baud}")
-                
-                # 记录到日志
-                log_file = getattr(self, 'unified_log_file', None)
-                if log_file:
-                    log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Flash completed, switched to monitor baud rate {monitor_baud}\n")
-                    log_file.flush()
             
             return result
         finally:
@@ -2318,9 +2233,10 @@ class ESPFlasher:
                               f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s, Pattern: {prompt_pattern}", 
                               session_id)
         
-        # 使用共享的串口监控实例（复用之前步骤的串口连接）
-        monitor = self.get_shared_monitor(port, monitor_baud)
-        if not monitor:
+        # 为当前步骤单独创建串口监控实例
+        normalized_port = normalize_serial_port(port)
+        monitor = SerialMonitor(normalized_port, monitor_baud)
+        if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
             if log_file:
                 log_file.write(f"[ERROR] Failed to open serial port\n")
@@ -2328,20 +2244,13 @@ class ESPFlasher:
             return False
         
         try:
-            # 不清空输入缓冲区，保留之前步骤的数据
-            # 只清空输出缓冲区，确保发送命令时缓冲区干净
+            # 清空输入输出缓冲区，确保从干净状态开始
             if monitor.serial_conn:
-                # 不清空输入缓冲区，保留设备发送的数据
-                # monitor.serial_conn.reset_input_buffer()  # 注释掉，保留数据
+                monitor.serial_conn.reset_input_buffer()
                 monitor.serial_conn.reset_output_buffer()
             
             if log_file:
-                # 检查是否是复用已有连接
-                if self.shared_monitor_port == port and self.shared_monitor_baud == monitor_baud:
-                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Reusing existing serial port connection (from previous step)\n")
-                else:
-                    log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, starting monitoring...\n")
-                log_file.write(f"[NOTE] Input buffer NOT cleared to preserve data from previous steps\n")
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, starting monitoring...\n")
                 log_file.flush()
             
             start_time = time.time()
@@ -2403,14 +2312,11 @@ class ESPFlasher:
                 
                 time.sleep(0.001)  # 更小的延迟，提高响应速度（像 ESP-IDF monitor）
             
-            # 不关闭串口，让后续步骤继续使用
-            # monitor.close()  # 注释掉，保持串口打开
             print(f"  ⚠️  超时未检测到提示: {prompt_pattern}")
             if log_file:
                 log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] === Step {step_name} COMPLETED (TIMEOUT) ===\n")
                 log_file.write(f"[WARNING] Timeout, prompt not detected: {prompt_pattern}\n")
                 log_file.write(f"Monitoring duration: {time.time() - start_time:.2f} seconds\n")
-                log_file.write(f"[NOTE] Serial port kept open for next steps\n")
                 log_file.flush()
             return False
             
@@ -2425,8 +2331,6 @@ class ESPFlasher:
                     log_file.flush()
                 except:
                     pass
-            # 不关闭串口，让后续步骤继续使用（即使出错也保持打开）
-            # monitor.close()  # 注释掉，保持串口打开
             return False
     
     def _step_interactive_input(self, step):
@@ -4340,6 +4244,8 @@ def execute_test_only(config_state):
         log_file.write(f"Test Only Session\n")
         log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         log_file.write(f"Port: {port}, Monitor Baud: {monitor_baud}, Bootloader Baud: {bootloader_baud}\n")
+        # Debug: 记录当前测试状态，方便对比 P+T 与独立 Test Only 的入参是否一致
+        log_file.write(f"[DEBUG STATE] config_state = {repr(config_state)}\n")
         log_file.write(f"{'='*80}\n\n")
         log_file.flush()
         
