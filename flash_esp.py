@@ -4564,6 +4564,9 @@ def execute_test_only(config_state):
     last_sound_time = None  # Last time sound was played during button wait
     sound_interval = 3.0  # Play sound every 3 seconds during button wait
     user_exit_requested = False  # Flag to track if user pressed ESC to exit
+    button_test_esc_pressed = False  # Flag to track if ESC was pressed during button test
+    button_terminal_raw_mode = False  # Flag to track if terminal is in raw mode for button detection
+    button_terminal_old_settings = None  # Store old terminal settings for button detection
     hw_version_input_success = False  # Flag to track if hardware version input was successful
     hw_version_retry_count = 0  # Counter for hardware version retry attempts
     max_hw_version_retries = 3  # Maximum retry attempts for hardware version input
@@ -4719,6 +4722,10 @@ def execute_test_only(config_state):
         print(f"  📊 开始监控日志（最长 {timeout:.0f} 秒，将循环比对关键字判断每项检测是否通过）...\n")
         
         while time.time() - start_time < timeout:
+            # Check if ESC was pressed during button test - exit immediately
+            if button_test_esc_pressed:
+                break
+            
             # Read available data from serial port
             try:
                 # Check if there's data waiting first
@@ -4916,6 +4923,25 @@ def execute_test_only(config_state):
                                 last_button_refresh_time = time.time()
                                 last_sound_time = time.time()  # Initialize sound timer
                                 detected_states.add('waiting_button')
+                                
+                                # Set terminal to raw mode for immediate ESC detection (no Enter key needed)
+                                try:
+                                    import termios
+                                    import tty
+                                    if sys.platform != 'win32' and sys.stdin.isatty():
+                                        fd = sys.stdin.fileno()
+                                        button_terminal_old_settings = termios.tcgetattr(fd)
+                                        # Set raw mode: disable echo, canonical mode, and signals
+                                        raw_settings = termios.tcgetattr(fd)
+                                        raw_settings[3] = raw_settings[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG)
+                                        raw_settings[6][termios.VMIN] = 1
+                                        raw_settings[6][termios.VTIME] = 0
+                                        termios.tcsetattr(fd, termios.TCSANOW, raw_settings)
+                                        button_terminal_raw_mode = True
+                                except (ImportError, OSError, AttributeError):
+                                    # termios not available, continue without raw mode
+                                    button_terminal_raw_mode = False
+                                
                                 # Initial prompt (will be refreshed dynamically)
                                 print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC退出]", end='', flush=True)
                                 log_file.write(f"[TEST STATUS] Button prompt detected, waiting for button press (press ESC to exit)\n")
@@ -5230,48 +5256,61 @@ def execute_test_only(config_state):
                 current_time = time.time()
                 elapsed = current_time - button_prompt_time
                 
-                # Refresh every 333ms (3 times per second)
-                if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= 0.333:
-                    # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
-                    print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
-                    last_button_refresh_time = current_time
-                
-                # Play sound every 3 seconds
-                if last_sound_time is None or (current_time - last_sound_time) >= sound_interval:
-                    if SOUND_ENABLED:
-                        play_notification_sound()
-                    last_sound_time = current_time
-                
                 # Check for ESC key press (non-blocking)
+                # Terminal is already in raw mode, so we can read characters immediately without Enter
+                esc_detected = False
                 try:
                     import select
-                    if sys.platform != 'win32':  # select only works on Unix-like systems
+                    if sys.platform != 'win32' and button_terminal_raw_mode:  # Only check if terminal is in raw mode
+                        # Check if there's input available (non-blocking)
                         if select.select([sys.stdin], [], [], 0)[0]:
-                            # There's input available
-                            import termios
-                            import tty
-                            # Save terminal settings
-                            old_settings = termios.tcgetattr(sys.stdin)
-                            try:
-                                # Set terminal to raw mode
-                                tty.setraw(sys.stdin.fileno())
-                                # Read one character
-                                ch = sys.stdin.read(1)
-                                if ch == '\x1b':  # ESC key
-                                    user_exit_requested = True
-                                    button_test_done = True
-                                    button_refresh_enabled = False
-                                    monitored_data['button_test_result'] = 'USER_EXIT'
-                                    # Clear the dynamic line and print exit message
-                                    print(f"\r  \033[K\033[33m⚠️  按键测试: 用户退出（按ESC）\033[0m")
-                                    log_file.write(f"[TEST STATUS] Button Test: USER_EXIT (ESC pressed)\n")
-                                    log_file.flush()
-                            finally:
-                                # Restore terminal settings
-                                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                            # Read one character immediately (terminal is already in raw mode)
+                            ch = sys.stdin.read(1)
+                            
+                            # Check if it's ESC key (could be standalone \x1b or part of escape sequence)
+                            if ch == '\x1b':  # ESC key
+                                # Clear any remaining escape sequence characters (like [A for arrow keys)
+                                # Read with timeout to avoid blocking
+                                import select as select_module
+                                while True:
+                                    if not select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                        break  # No more input
+                                    try:
+                                        # Read and discard additional characters in escape sequence
+                                        sys.stdin.read(1)
+                                    except:
+                                        break
+                                
+                                esc_detected = True
+                                button_test_done = True
+                                button_refresh_enabled = False
+                                button_test_esc_pressed = True  # Mark ESC was pressed - exit test immediately
+                                monitored_data['button_test_result'] = 'FAIL'
+                                # Clear the dynamic line and print fail message with immediate flush
+                                print(f"\r  \033[K\033[31m✗ 按键测试: 未通过（按ESC跳过）\033[0m", flush=True)
+                                print()  # Add newline to ensure the message is on its own line and visible
+                                log_file.write(f"[TEST STATUS] Button Test: FAIL (ESC pressed - button not detected)\n")
+                                log_file.flush()
+                                # Force stdout flush to ensure the message is displayed immediately
+                                sys.stdout.flush()
+                            # If it's not ESC, ignore the character (it's already consumed and won't be printed in raw mode)
                 except (ImportError, OSError, AttributeError):
                     # select/termios not available (e.g., Windows or non-terminal), skip ESC detection
                     pass
+                
+                # Only refresh prompt if ESC was not detected
+                if not esc_detected:
+                    # Refresh every 333ms (3 times per second)
+                    if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= 0.333:
+                        # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
+                        print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
+                        last_button_refresh_time = current_time
+                    
+                    # Play sound every 3 seconds
+                    if last_sound_time is None or (current_time - last_sound_time) >= sound_interval:
+                        if SOUND_ENABLED:
+                            play_notification_sound()
+                        last_sound_time = current_time
             
             # Check if user requested exit (ESC pressed)
             if user_exit_requested:
@@ -5311,8 +5350,14 @@ def execute_test_only(config_state):
             
             time.sleep(0.001)  # Small delay for responsiveness
         
-        # Check monitoring timeout (only if user didn't exit)
-        if not user_exit_requested:
+        # Check if ESC was pressed during button test - exit immediately
+        if button_test_esc_pressed:
+            print("\n  \033[31m✗ 测试失败：按键未检测到，用户按ESC退出\033[0m")
+            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Button not detected, user pressed ESC to exit\n")
+            log_file.flush()
+        
+        # Check monitoring timeout (only if user didn't exit and ESC wasn't pressed)
+        if not user_exit_requested and not button_test_esc_pressed:
             elapsed_time = time.time() - start_time
             if elapsed_time >= timeout:
                 # Clear any active dynamic prompt line before printing timeout message
@@ -5326,11 +5371,53 @@ def execute_test_only(config_state):
             if button_refresh_enabled:
                 print("\r  \033[K", end='', flush=True)
         
+        # Restore terminal settings if we set it to raw mode for button detection
+        if button_terminal_raw_mode and button_terminal_old_settings is not None:
+            try:
+                import termios
+                if sys.platform != 'win32' and sys.stdin.isatty():
+                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, button_terminal_old_settings)
+                    button_terminal_raw_mode = False
+                    button_terminal_old_settings = None
+            except (ImportError, OSError, AttributeError):
+                pass
+        
+        # Restore terminal settings if we set it to raw mode for button detection
+        if button_terminal_raw_mode and button_terminal_old_settings is not None:
+            try:
+                import termios
+                if sys.platform != 'win32' and sys.stdin.isatty():
+                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, button_terminal_old_settings)
+                    button_terminal_raw_mode = False
+                    button_terminal_old_settings = None
+            except (ImportError, OSError, AttributeError):
+                pass
+        
         # Close serial port
         if ser is not None and ser.is_open:
             ser.close()
         if log_file:
             log_file.close()
+        
+        # If ESC was pressed during button test, exit immediately with failure
+        if button_test_esc_pressed:
+            print("\n" + "=" * 80)
+            print("测试失败")
+            print("=" * 80)
+            print("  ✗ 按键测试未通过：用户按ESC退出（按键未检测到）")
+            print("=" * 80)
+            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            
+            if SOUND_ENABLED:
+                play_completion_sound()
+            
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            
+            return False
         
         # If device is in application mode and test was rejected, do not print normal summary.
         # Instead, show a clear rejection message and return False.
@@ -5415,10 +5502,12 @@ def execute_test_only(config_state):
             button_result = monitored_data.get('button_test_result')
             if button_result == 'PASS':
                 summary_items.append(("按键测试", "\033[32m✓ 通过\033[0m"))
+            elif button_result == 'FAIL':
+                summary_items.append(("按键测试", "\033[31m✗ 未通过（未检测到按键）\033[0m"))
             elif button_result == 'USER_EXIT':
                 summary_items.append(("按键测试", "\033[33m⚠️  用户退出（按ESC）\033[0m"))
             elif button_result == 'TIMEOUT':
-                summary_items.append(("按键测试", "\033[33m✗ 超时（未检测到按键动作）\033[0m"))
+                summary_items.append(("按键测试", "\033[31m✗ 超时（未检测到按键动作）\033[0m"))
             else:
                 summary_items.append(("按键测试", "\033[31m✗ 未完成\033[0m"))
         
