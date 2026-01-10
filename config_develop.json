@@ -281,5 +281,7 @@
       ]
     }
   ],
-  "device_code_rule": "64YYWWXnnnnn"
+  "device_code_rule": "64YYWWXnnnnn",
+  "print_esptool_logs": false,
+  "print_debug_logs": false
 }

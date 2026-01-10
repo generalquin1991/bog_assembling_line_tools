@@ -53,11 +53,36 @@ except ImportError:
 # 全局开关：控制是否打印设备日志（默认开启）
 PRINT_DEVICE_LOGS = True
 
+# 全局开关：控制是否打印 esptool 日志（默认开启）
+PRINT_ESPTOOL_LOGS = True
+
+# 全局开关：控制是否打印 debug 日志（默认开启）
+PRINT_DEBUG_LOGS = True
+
+
+def debug_print(*args, **kwargs):
+    """
+    Debug日志打印工具，用于打印程序运行过程中的debug信息。
+    格式: [DEBUG] <内容>
+    受 PRINT_DEBUG_LOGS 全局开关控制
+    """
+    if not PRINT_DEBUG_LOGS:
+        return  # 如果开关关闭，不打印
+    
+    # 添加 [DEBUG] 前缀
+    prefix = "[DEBUG] "
+    if args:
+        # 将第一个参数添加前缀
+        new_args = (prefix + str(args[0]),) + args[1:]
+        print(*new_args, **kwargs)
+    else:
+        print(prefix, **kwargs)
+
 
 def ts_print(*args, **kwargs):
     """
     带时间戳的打印工具，仅用于"来自设备的日志行"。
-    格式示例：2026-01-07-15-38-01:010 <原始内容>
+    格式示例：[TARGET] 2026-01-07-15-38-01:010 <原始内容>
     受 PRINT_DEVICE_LOGS 全局开关控制
     """
     if not PRINT_DEVICE_LOGS:
@@ -66,10 +91,16 @@ def ts_print(*args, **kwargs):
     # 生成毫秒精度时间戳
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d-%H-%M-%S") + ":" + f"{int(now.microsecond / 1000):03d}"
-    prefix = f"{ts} "
-
-    sep = kwargs.pop("sep", " ")
-    print(prefix, *args, sep=sep, **kwargs)
+    
+    # 添加 [TARGET] 前缀
+    prefix = "[TARGET] "
+    
+    if args:
+        # 将第一个参数添加前缀和时间戳
+        new_args = (f"{prefix}{ts} " + str(args[0]),) + args[1:]
+        print(*new_args, **kwargs)
+    else:
+        print(f"{prefix}{ts}", **kwargs)
 
 try:
     import inquirer
@@ -353,7 +384,7 @@ class SerialMonitor:
                     if sn:
                         # 保存生成的序列号到device_info，用于后续状态更新
                         self.device_info['generated_sn'] = sn
-                        print(f"\033[92m✓ 序列号生成成功: {sn}\033[0m")
+                        debug_print(f"\033[92m✓ 序列号生成成功: {sn}\033[0m")
                         return sn
                     else:
                         print(f"\033[91m✗ 序列号生成失败: 返回值为空\033[0m")
@@ -723,6 +754,7 @@ class ESPFlasher:
     
     def flash_firmware(self, port=None, firmware_path=None):
         """烧录固件"""
+        global PRINT_ESPTOOL_LOGS
         # 检查esptool是否可用
         esptool_path = self.check_esptool()
         
@@ -746,15 +778,15 @@ class ESPFlasher:
         mode_desc = self.config.get('description', '')
         encrypt = self.config.get('encrypt', False)
         
-        print(f"\n开始烧录固件...")
-        print(f"模式: {mode.upper()}" + (f" ({mode_desc})" if mode_desc else ""))
+        debug_print(f"\n开始烧录固件...")
+        debug_print(f"模式: {mode.upper()}" + (f" ({mode_desc})" if mode_desc else ""))
         if encrypt:
-            print(f"⚠️  加密模式: 已启用")
-        print(f"串口: {port}")
-        print(f"波特率: {self.config['baud_rate']}")
-        print(f"芯片类型: {self.config['chip_type']}")
-        print(f"固件文件: {firmware_path}")
-        print("-" * 60)
+            debug_print(f"⚠️  加密模式: 已启用")
+        debug_print(f"串口: {port}")
+        debug_print(f"波特率: {self.config['baud_rate']}")
+        debug_print(f"芯片类型: {self.config['chip_type']}")
+        debug_print(f"固件文件: {firmware_path}")
+        debug_print("-" * 60)
         
         # 根据芯片类型自动调整Flash参数
         self.adjust_flash_params()
@@ -762,7 +794,7 @@ class ESPFlasher:
         # 检测是否为combined固件
         is_combined = self.is_combined_firmware(firmware_path)
         if is_combined:
-            print("检测到combined固件，将从0x0地址开始烧录")
+            debug_print("检测到combined固件，将从0x0地址开始烧录")
         
         # 擦除Flash（如果需要）
         if self.config.get('erase_flash', False):
@@ -786,6 +818,7 @@ class ESPFlasher:
                 )
                 
                 # 实时显示擦除进度
+                global PRINT_ESPTOOL_LOGS
                 while True:
                     output = process.stdout.readline()
                     if output == '' and process.poll() is not None:
@@ -793,7 +826,8 @@ class ESPFlasher:
                     if output:
                         line = output.strip()
                         if line:
-                            print(line)
+                            if PRINT_ESPTOOL_LOGS:
+                                print(line)
                 
                 return_code = process.poll()
                 if return_code != 0:
@@ -847,9 +881,9 @@ class ESPFlasher:
         
         # 执行烧录（实时显示进度）
         try:
-            print("正在烧录固件...")
-            print(f"执行命令: {' '.join(cmd_args)}")
-            print("-" * 60)
+            debug_print("正在烧录固件...")
+            debug_print(f"执行命令: {' '.join(cmd_args)}")
+            debug_print("-" * 60)
             
             # 使用统一的日志文件（如果存在）
             unified_log_file = getattr(self, 'unified_log_file', None)
@@ -1172,7 +1206,7 @@ class ESPFlasher:
                                     self.device_info = {}
                                 self.device_info['mac_address'] = mac_address
                                 # 调试输出
-                                print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address}")
+                                debug_print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address}")
                     
                     # 从日志中解析进度信息
                     result = parse_progress_from_line(line)
@@ -1365,18 +1399,21 @@ class ESPFlasher:
                             continue
                         
                         if line != last_line:
-                            # 根据内容类型格式化显示
-                            if 'warning' in line_lower or 'deprecated' in line_lower:
-                                print(f"  ⚠️  {line}", flush=True)
-                            elif 'error' in line_lower or 'fail' in line_lower:
-                                print(f"  ✗ {line}", flush=True)
-                            elif any(keyword in line_lower for keyword in ['connecting', 'chip type', 'uploading', 'running', 'wrote', 'verified', 'success', 'done', 'complete']):
-                                print(f"  {line}", flush=True)
-                            else:
-                                # 显示所有其他行（包括可能包含进度信息的行）
-                                # 如果这行包含进度条格式，跳过显示（避免重复）
-                                if not re.search(r'\[.*?\]\s*\d+(?:\.\d+)?%\s*\(?\d+/\d+\s*bytes\)?', line):
-                                    print(f"  [RAW] {line}", flush=True)
+                            # 根据 PRINT_ESPTOOL_LOGS 配置决定是否打印 esptool 原始输出
+                            # 注意：进度条始终显示（不受此开关控制）
+                            if PRINT_ESPTOOL_LOGS:
+                                # 根据内容类型格式化显示
+                                if 'warning' in line_lower or 'deprecated' in line_lower:
+                                    print(f"  ⚠️  {line}", flush=True)
+                                elif 'error' in line_lower or 'fail' in line_lower:
+                                    print(f"  ✗ {line}", flush=True)
+                                elif any(keyword in line_lower for keyword in ['connecting', 'chip type', 'uploading', 'running', 'wrote', 'verified', 'success', 'done', 'complete']):
+                                    print(f"  {line}", flush=True)
+                                else:
+                                    # 显示所有其他行（包括可能包含进度信息的行）
+                                    # 如果这行包含进度条格式，跳过显示（避免重复）
+                                    if not re.search(r'\[.*?\]\s*\d+(?:\.\d+)?%\s*\(?\d+/\d+\s*bytes\)?', line):
+                                        print(f"  [RAW] {line}", flush=True)
                             last_line = line
             except KeyboardInterrupt:
                 # 用户按 Ctrl+C，立即中断
@@ -1441,7 +1478,7 @@ class ESPFlasher:
             if return_code == 0:
                 print("\n\n✓ Firmware flashing successful!")
                 if unified_log_file:
-                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                    debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 
                 # 烧录后不自动复位，由后续步骤处理
                 # 如果在procedures流程中，立即切换到监控波特率并开始监控
@@ -1449,7 +1486,7 @@ class ESPFlasher:
                     monitor_baud = self.config.get('monitor_baud')
                     if not monitor_baud:
                         raise ValueError("monitor_baud not configured in config file")
-                    print(f"\n  → 烧录完成，切换到监控波特率 {monitor_baud} 并开始监控...")
+                    debug_print(f"\n  → 烧录完成，切换到监控波特率 {monitor_baud} 并开始监控...")
                     if unified_log_file:
                         unified_log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Flash completed, switching to monitor baud rate {monitor_baud}\n")
                         unified_log_file.flush()
@@ -1499,7 +1536,7 @@ class ESPFlasher:
                 
                 print("\n\n✗ Firmware flashing failed!")
                 if unified_log_file:
-                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                    debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 save_operation_history("Flash Failed", 
                                       f"Port: {port}, Firmware: {firmware_path}, Return code: {return_code}", 
                                       self.session_id)
@@ -1514,7 +1551,7 @@ class ESPFlasher:
                 unified_log_file.write("\n" + "=" * 80 + "\n")
                 unified_log_file.write("错误: 烧录超时\n")
                 unified_log_file.flush()
-                print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
             return False
         except FileNotFoundError:
             print(f"\n✗ Error: esptool not found, please install: pip install esptool")
@@ -1549,7 +1586,7 @@ class ESPFlasher:
                     unified_log_file.write("\n" + "=" * 80 + "\n")
                     unified_log_file.write("User interrupted flashing\n")
                     unified_log_file.flush()
-                    print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                    debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 except:
                     pass
             save_operation_history("Flash Interrupted", "User pressed Ctrl+C", self.session_id)
@@ -1564,7 +1601,7 @@ class ESPFlasher:
                 unified_log_file.write(f"Exception: {e}\n")
                 unified_log_file.write(traceback.format_exc())
                 unified_log_file.flush()
-                print(f"📝 All logs saved to: {self.unified_log_filepath}")
+                debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
             save_operation_history("Flash Error", f"Error: {e}", self.session_id)
             return False
     
@@ -1611,7 +1648,7 @@ class ESPFlasher:
         cmd_args.extend([app_offset, self.config['firmware_path']])
         
         try:
-            print("正在烧录完整固件（包含bootloader和分区表）...")
+            debug_print("正在烧录完整固件（包含bootloader和分区表）...")
             result = subprocess.run(cmd_args, capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
@@ -1794,7 +1831,7 @@ class ESPFlasher:
         step_name = step.get('name', 'check_uart')
         session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
-        print(f"  检查串口: {port}")
+        debug_print(f"  检查串口: {port}")
         start_time = time.time()
         
         save_operation_history(f"Step: {step_name}", 
@@ -1831,8 +1868,8 @@ class ESPFlasher:
         step_name = step.get('name', 'check_encryption')
         session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
-        print(f"  监控串口: {port} (波特率: {monitor_baud})")
-        print(f"  超时: {timeout}秒")
+        debug_print(f"  监控串口: {port} (波特率: {monitor_baud})")
+        debug_print(f"  超时: {timeout}秒")
         
         # 使用统一的日志文件
         log_file = getattr(self, 'unified_log_file', None)
@@ -2032,11 +2069,11 @@ class ESPFlasher:
     def _step_flash_firmware(self, step):
         """执行固件烧录"""
         timeout = step.get('timeout', 300)
-        print(f"  执行固件烧录 (超时: {timeout}秒)")
+        debug_print(f"  执行固件烧录 (超时: {timeout}秒)")
         
         # 在烧录前稍作等待，确保之前可能的串口操作已经完成
         # esptool 需要独占串口才能正确连接设备并自动处理复位
-        print("  → 确保串口空闲，让 esptool 独占使用...")
+        debug_print("  → 确保串口空闲，让 esptool 独占使用...")
         time.sleep(0.2)  # 短暂等待，确保串口完全释放
         
         # 在procedures流程中，烧录后不自动复位，由后续步骤处理
@@ -2114,7 +2151,7 @@ class ESPFlasher:
                 'read-mac'
             ]
             
-            print(f"  执行命令: {' '.join(cmd)}")
+            debug_print(f"  执行命令: {' '.join(cmd)}")
             if log_file:
                 log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Executing: {' '.join(cmd)}\n")
                 log_file.flush()
@@ -2832,9 +2869,11 @@ def menu_mode_main(config_state, mode_type):
             config_state['monitor_baud'] = config_state.get('monitor_baud') or default_config.get('monitor_baud')
             config_state['version_string'] = config_state.get('version_string') or default_config.get('version_string')
             config_state['device_code_rule'] = config_state.get('device_code_rule') or default_config.get('device_code_rule')
-            # Load print_device_logs setting and update global variable
-            global PRINT_DEVICE_LOGS
+            # Load print_device_logs, print_esptool_logs, and print_debug_logs settings and update global variables
+            global PRINT_DEVICE_LOGS, PRINT_ESPTOOL_LOGS, PRINT_DEBUG_LOGS
             PRINT_DEVICE_LOGS = default_config.get('print_device_logs', True)
+            PRINT_ESPTOOL_LOGS = default_config.get('print_esptool_logs', True)
+            PRINT_DEBUG_LOGS = default_config.get('print_debug_logs', True)
     
     # Remember last selected action to restore selection when returning from operations
     last_selected_action = None
@@ -2978,6 +3017,12 @@ def save_config_to_file(config_state):
         if 'print_device_logs' in config_state:
             existing_config['print_device_logs'] = config_state['print_device_logs']
         
+        if 'print_esptool_logs' in config_state:
+            existing_config['print_esptool_logs'] = config_state['print_esptool_logs']
+        
+        if 'print_debug_logs' in config_state:
+            existing_config['print_debug_logs'] = config_state['print_debug_logs']
+        
         # Save to file
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(existing_config, f, indent=2, ensure_ascii=False)
@@ -3039,14 +3084,18 @@ def menu_settings(config_state, mode_type):
             current_monitor_baud = config_state.get('monitor_baud', '')
             current_version = config_state.get('version_string', '')
             current_rule = config_state.get('device_code_rule', '')
-            # Load print_device_logs from config file
+            # Load print_device_logs, print_esptool_logs, and print_debug_logs from config file
             config_path = config_state.get('config_path', 'config_develop.json')
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     current_print_logs = config.get('print_device_logs', True)
+                    current_print_esptool_logs = config.get('print_esptool_logs', True)
+                    current_print_debug_logs = config.get('print_debug_logs', True)
             except Exception:
                 current_print_logs = True
+                current_print_esptool_logs = True
+                current_print_debug_logs = True
             
             # Format firmware display (show filename only)
             firmware_display = 'Not set'
@@ -3074,7 +3123,9 @@ def menu_settings(config_state, mode_type):
                 ("Monitor Baud Rate", format_current_value(current_monitor_baud)),
                 ("Version String", format_current_value(current_version, 20)),
                 ("Device Code Rule", format_current_value(current_rule, 20)),
-                ("Print Device Logs", "✓ Enabled" if current_print_logs else "✗ Disabled")
+                ("Print Device Logs", "✓ Enabled" if current_print_logs else "✗ Disabled"),
+                ("Print ESPTool Logs", "✓ Enabled" if current_print_esptool_logs else "✗ Disabled"),
+                ("Print Debug Logs", "✓ Enabled" if current_print_debug_logs else "✗ Disabled")
             ]
             print_config_table(preview_items, 80)
             print()
@@ -3091,6 +3142,8 @@ def menu_settings(config_state, mode_type):
                 ('  🏷️  Version String', 'version_string'),
                 ('  🔢  Device Code Rule', 'device_code_rule'),
                 ('  📝  Print Device Logs', 'print_device_logs'),
+                ('  🔧  Print ESPTool Logs', 'print_esptool_logs'),
+                ('  🐛  Print Debug Logs', 'print_debug_logs'),
                 ('  🔄  Reload Default Configuration', 'reload_defaults'),
                 ('  ←  Back', 'back')
             ]
@@ -3148,6 +3201,12 @@ def menu_settings(config_state, mode_type):
                 save_config_to_file(config_state)
             elif setting == 'print_device_logs':
                 config_state = menu_set_print_device_logs(config_state)
+                save_config_to_file(config_state)
+            elif setting == 'print_esptool_logs':
+                config_state = menu_set_print_esptool_logs(config_state)
+                save_config_to_file(config_state)
+            elif setting == 'print_debug_logs':
+                config_state = menu_set_print_debug_logs(config_state)
                 save_config_to_file(config_state)
                 
         except KeyboardInterrupt:
@@ -3501,6 +3560,142 @@ def menu_set_device_code_rule(config_state):
     # Only 64YYWWXnnnnn is allowed - force set it
     config_state['device_code_rule'] = '64YYWWXnnnnn'
     print(f"\n✓ Device code rule set: {config_state['device_code_rule']}")
+    
+    return config_state
+
+
+def menu_set_print_esptool_logs(config_state):
+    """Set print esptool logs setting"""
+    clear_screen()
+    print_header("Set Print ESPTool Logs", 80)
+    
+    # Load default configuration
+    config_path = config_state.get('config_path', 'config_develop.json')
+    default_config = load_default_config(config_path)
+    default_print_esptool_logs = default_config.get('print_esptool_logs', True)
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            current_print_esptool_logs = current_config.get('print_esptool_logs', default_print_esptool_logs)
+    except Exception:
+        current_print_esptool_logs = default_print_esptool_logs
+    
+    # Display current and default values
+    print_section_header("Current Configuration", 80)
+    print()
+    print_config_table([
+        ("Current Setting", "✓ Enabled" if current_print_esptool_logs else "✗ Disabled"),
+        ("Default Setting", "✓ Enabled" if default_print_esptool_logs else "✗ Disabled")
+    ], 80)
+    print()
+    
+    print_centered("Control whether to print esptool output logs to console", 80)
+    print_centered("(Logs are always saved to log files)", 80)
+    print()
+    
+    enable_question = [
+        inquirer.Confirm('enable',
+                        message="Enable print esptool logs?",
+                        default=current_print_esptool_logs)
+    ]
+    
+    answer = inquirer.prompt(enable_question)
+    if not answer:
+        return config_state
+    
+    # Save to config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    
+    config['print_esptool_logs'] = answer['enable']
+    
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"\n✓ Print esptool logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"  Configuration saved to: {config_path}")
+        
+        # Update global variable
+        global PRINT_ESPTOOL_LOGS
+        PRINT_ESPTOOL_LOGS = answer['enable']
+        
+        # Update config_state for consistency
+        config_state['print_esptool_logs'] = answer['enable']
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+    
+    return config_state
+
+
+def menu_set_print_debug_logs(config_state):
+    """Set print debug logs setting"""
+    clear_screen()
+    print_header("Set Print Debug Logs", 80)
+    
+    # Load default configuration
+    config_path = config_state.get('config_path', 'config_develop.json')
+    default_config = load_default_config(config_path)
+    default_print_debug_logs = default_config.get('print_debug_logs', True)
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            current_print_debug_logs = current_config.get('print_debug_logs', default_print_debug_logs)
+    except Exception:
+        current_print_debug_logs = default_print_debug_logs
+    
+    # Display current and default values
+    print_section_header("Current Configuration", 80)
+    print()
+    print_config_table([
+        ("Current Setting", "✓ Enabled" if current_print_debug_logs else "✗ Disabled"),
+        ("Default Setting", "✓ Enabled" if default_print_debug_logs else "✗ Disabled")
+    ], 80)
+    print()
+    
+    print_centered("Control whether to print debug logs to console", 80)
+    print_centered("(Debug logs include program execution status messages)", 80)
+    print()
+    
+    enable_question = [
+        inquirer.Confirm('enable',
+                        message="Enable print debug logs?",
+                        default=current_print_debug_logs)
+    ]
+    
+    answer = inquirer.prompt(enable_question)
+    if not answer:
+        return config_state
+    
+    # Save to config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    
+    config['print_debug_logs'] = answer['enable']
+    
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"\n✓ Print debug logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"  Configuration saved to: {config_path}")
+        
+        # Update global variable
+        global PRINT_DEBUG_LOGS
+        PRINT_DEBUG_LOGS = answer['enable']
+        
+        # Update config_state for consistency
+        config_state['print_debug_logs'] = answer['enable']
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
     
     return config_state
 
@@ -3944,7 +4139,7 @@ def program(flasher, config_state):
     if hasattr(flasher, 'procedure_state') and flasher.procedure_state.get('monitored_data', {}).get('mac_address'):
         mac_address_raw = flasher.procedure_state['monitored_data']['mac_address']
         mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
-        print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
+        debug_print(f"  ✓ 从烧录输出中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
     # 2. 尝试从 device_info 获取
     elif hasattr(flasher, 'device_info') and flasher.device_info.get('mac_address'):
         mac_address_raw = flasher.device_info['mac_address']
@@ -3962,7 +4157,7 @@ def program(flasher, config_state):
             print(f"  ⚠️  调试: device_info = {flasher.device_info}")
         else:
             print(f"  ⚠️  调试: device_info 不存在")
-        print(f"  ⚠️  未能从烧录输出中解析 MAC 地址，使用 UNKNOWN")
+        debug_print(f"  ⚠️  未能从烧录输出中解析 MAC 地址，使用 UNKNOWN")
     
     try:
         # prog/test 统计日志统一写入 local_data 目录
@@ -3971,7 +4166,7 @@ def program(flasher, config_state):
         timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
         # 生成统一命名规则: YYMMDD_HHMMSS_MAC_FLASH.json
         prog_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_FLASH.json")
-        print(f"  📝 日志文件: {prog_log_path}")
+        debug_print(f"  📝 日志文件: {prog_log_path}")
         with open(prog_log_path, "a", encoding="utf-8") as f:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             mode = flasher.config.get("mode", config_state.get("mode", "unknown"))
@@ -4029,10 +4224,10 @@ def _display_operation_header(flasher, operation_name):
         flasher: ESPFlasher 实例
         operation_name: 操作名称（用于日志显示）
     """
-    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
-    print(f"📋 Session ID: {flasher.session_id}")
+    debug_print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    debug_print(f"📋 Session ID: {flasher.session_id}")
     if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
-        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
+        debug_print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
 
 
 def _wait_for_user_return():
@@ -4190,9 +4385,12 @@ def run_esptool_command(args):
     import esptool
     from esptool import FatalError
     
-    print("\n================ esptool 调用 ================")
-    print("esptool 参数:", " ".join(args))
-    print("=============================================\n")
+    global PRINT_ESPTOOL_LOGS
+    
+    if PRINT_ESPTOOL_LOGS:
+        print("\n[ESPTOOL] ================ esptool 调用 ================")
+        print("[ESPTOOL] esptool 参数:", " ".join(args))
+        print("[ESPTOOL] =============================================\n")
     
     old_argv = sys.argv
     sys.argv = ["esptool.py"] + args
@@ -4217,11 +4415,15 @@ def run_esptool_command(args):
         sys.argv = old_argv
     
     output = buf.getvalue()
-    # 保持原有行为：仍然把 esptool 的输出打印到控制台
-    if output:
-        print(output, end="")
-    if code != 0:
-        print(f"esptool 退出码: {code}")
+    # 根据配置决定是否打印 esptool 的输出到控制台
+    if PRINT_ESPTOOL_LOGS:
+        if output:
+            # 为每一行添加 [ESPTOOL] 前缀
+            for line in output.split('\n'):
+                if line.strip():  # 只打印非空行
+                    print(f"[ESPTOOL] {line}")
+        if code != 0:
+            print(f"[ESPTOOL] esptool 退出码: {code}")
     return code, output, is_secure_download_mode
 
 
@@ -4269,9 +4471,11 @@ def execute_test_only(config_state):
             pass
         return False
     
-    # Load print_device_logs setting from config
-    global PRINT_DEVICE_LOGS
+    # Load print_device_logs, print_esptool_logs, and print_debug_logs settings from config
+    global PRINT_DEVICE_LOGS, PRINT_ESPTOOL_LOGS, PRINT_DEBUG_LOGS
     PRINT_DEVICE_LOGS = config.get('print_device_logs', True)  # Default to True if not set
+    PRINT_ESPTOOL_LOGS = config.get('print_esptool_logs', True)  # Default to True if not set
+    PRINT_DEBUG_LOGS = config.get('print_debug_logs', True)  # Default to True if not set
     
     # Extract test configuration from config
     log_patterns = {}
@@ -4306,13 +4510,13 @@ def execute_test_only(config_state):
         
         # Debug: Print configuration status
         if log_patterns or test_states:
-            print(f"  ✓ 已加载测试配置: log_patterns={len(log_patterns)} 项, test_states={len(test_states)} 项")
+            debug_print(f"  ✓ 已加载测试配置: log_patterns={len(log_patterns)} 项, test_states={len(test_states)} 项")
             if extract_pressure:
-                print(f"  ✓ 压力传感器检测: 已启用")
+                debug_print(f"  ✓ 压力传感器检测: 已启用")
             if extract_rtc:
-                print(f"  ✓ RTC检测: 已启用")
+                debug_print(f"  ✓ RTC检测: 已启用")
             if monitor_button:
-                print(f"  ✓ 按键检测: 已启用")
+                debug_print(f"  ✓ 按键检测: 已启用")
         else:
             print(f"  ⚠️  警告: 未找到测试配置 (log_patterns 和 test_states 均为空)")
             print(f"  ⚠️  请检查配置文件中的 procedures 定义")
@@ -4323,8 +4527,8 @@ def execute_test_only(config_state):
     log_dir.mkdir(parents=True, exist_ok=True)
     log_filepath = log_dir / f"test_only_{session_id}.txt"
     
-    print(f"\n📁 Test log will be saved to: {log_filepath}")
-    print(f"📋 Session ID: {session_id}\n")
+    debug_print(f"\n📁 Test log will be saved to: {log_filepath}")
+    debug_print(f"📋 Session ID: {session_id}\n")
     
     # Initialize monitored data
     monitored_data = {
@@ -4389,7 +4593,7 @@ def execute_test_only(config_state):
         
         # Step 1: Use esptool run command to start user code
         normalized_port = normalize_serial_port(port)
-        print(f"  → 使用 esptool run 命令启动用户程序...")
+        debug_print(f"  → 使用 esptool run 命令启动用户程序...")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Using esptool run command to start user code\n")
         log_file.flush()
         
@@ -4400,7 +4604,7 @@ def execute_test_only(config_state):
         ser = None
         
         # Call esptool run command
-        print(f"  → 调用 esptool run（波特率: {bootloader_baud}）...")
+        debug_print(f"  → 调用 esptool run（波特率: {bootloader_baud}）...")
         run_result, run_output, is_secure_download_mode = run_esptool_command([
             "--port",
             normalized_port,
@@ -4444,7 +4648,7 @@ def execute_test_only(config_state):
                 return False
         
         if run_result != 0:
-            print(f"  ⚠️  esptool run 命令执行异常（退出码: {run_result}）")
+            debug_print(f"  ⚠️  esptool run 命令执行异常（退出码: {run_result}）")
             log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run returned code: {run_result}\n")
         log_file.flush()
         
@@ -4457,20 +4661,20 @@ def execute_test_only(config_state):
                 if len(mac_parts) == 6:
                     mac_addr = ':'.join(mac_parts).upper()
                     monitored_data['mac_address'] = mac_addr
-                    print(f"  ✓ 从 esptool run 输出中解析到 MAC 地址: {mac_addr}")
+                    debug_print(f"  ✓ 从 esptool run 输出中解析到 MAC 地址: {mac_addr}")
                     log_file.write(f"[TEST STATUS] MAC Address from esptool run: {mac_addr}\n")
                     log_file.flush()
         except Exception:
             # 解析失败不会影响主流程
             pass
         
-        print(f"  ✓ esptool run 完成（耗时 {run_duration:.0f}ms）")
+        debug_print(f"  ✓ esptool run 完成（耗时 {run_duration:.0f}ms）")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run completed in {run_duration:.0f}ms\n")
         log_file.flush()
         
         # Step 2: Immediately open serial port for monitoring (using monitor baud rate)
         # No delay - open immediately after run to capture all logs from the start
-        print(f"  → 立即打开串口监听日志: {normalized_port} (波特率: {monitor_baud})...")
+        debug_print(f"  → 立即打开串口监听日志: {normalized_port} (波特率: {monitor_baud})...")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Immediately opening serial port for monitoring at {monitor_baud} baud\n")
         log_file.flush()
         
@@ -4498,7 +4702,7 @@ def execute_test_only(config_state):
                     log_file.flush()
                     raise
         
-        print("  ✓ 串口已打开，立即开始监听日志...\n")
+        debug_print("  ✓ 串口已打开，立即开始监听日志...\n")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, immediately starting log monitoring\n")
         log_file.flush()
         
@@ -4529,7 +4733,7 @@ def execute_test_only(config_state):
                         # Calculate time from run command start to first data received
                         elapsed_from_run = (time.time() - run_start_time) * 1000
                         elapsed_from_monitoring = (time.time() - monitoring_start_time) * 1000
-                        print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
+                        debug_print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
                         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] First data received: {elapsed_from_run:.0f}ms after run command, {elapsed_from_monitoring:.0f}ms after monitoring started\n")
                         log_file.flush()
                     
@@ -4552,7 +4756,7 @@ def execute_test_only(config_state):
                             # Calculate time from run command start to first data received
                             elapsed_from_run = (time.time() - run_start_time) * 1000
                             elapsed_from_monitoring = (time.time() - monitoring_start_time) * 1000
-                            print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
+                            debug_print(f"  ✓ 首次收到设备数据 (run命令后 {elapsed_from_run:.0f}ms, 监听开始后 {elapsed_from_monitoring:.0f}ms)")
                             log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] First data received: {elapsed_from_run:.0f}ms after run command, {elapsed_from_monitoring:.0f}ms after monitoring started\n")
                             log_file.flush()
                         
@@ -4566,7 +4770,7 @@ def execute_test_only(config_state):
                         # No data received, check if we've been waiting too long
                         elapsed = time.time() - last_data_time
                         if elapsed > 2.0 and not no_data_warning_printed:
-                            print(f"  ⚠️  等待设备输出日志中... (已等待 {elapsed:.1f}秒)")
+                            debug_print(f"  ⚠️  等待设备输出日志中... (已等待 {elapsed:.1f}秒)")
                             # print(f"  [调试] 串口状态: is_open={ser.is_open}, in_waiting={ser.in_waiting}, baudrate={ser.baudrate}")
                             no_data_warning_printed = True
             except Exception as e:
@@ -4850,7 +5054,7 @@ def execute_test_only(config_state):
                                                 if device_code:
                                                     # 保存生成的序列号到monitored_data，用于后续状态更新
                                                     monitored_data['generated_sn'] = device_code
-                                                    print(f"\033[92m✓ 序列号生成成功: {device_code}\033[0m")
+                                                    debug_print(f"\033[92m✓ 序列号生成成功: {device_code}\033[0m")
                                                 else:
                                                     print(f"\033[91m✗ 序列号生成失败: 返回值为空\033[0m")
                                                     device_code = None
@@ -5314,7 +5518,7 @@ def execute_test_only(config_state):
                 print(f"  总体结果: \033[33m{passed_tests}/{total_tests} 项通过 ({pass_rate:.1f}%)\033[0m")
                 print(f"  \033[33m⚠️  有 {total_tests - passed_tests} 项未通过\033[0m")
         print("=" * 80)
-        print(f"\n📁 完整日志已保存到: {log_filepath}")
+        debug_print(f"\n📁 完整日志已保存到: {log_filepath}")
         
         # ========== Update SN status if using SN generator ==========
         generated_sn = monitored_data.get('generated_sn')
@@ -5330,7 +5534,7 @@ def execute_test_only(config_state):
                 if test_success:
                     # 测试成功，标记为占用成功
                     if update_sn_status(sn_to_update, 'occupied'):
-                        print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）\033[0m")
+                        debug_print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）\033[0m")
                     else:
                         print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
                 else:
@@ -5389,7 +5593,7 @@ def execute_test_only(config_state):
             if 'monitored_data' in locals() and monitored_data.get('mac_address'):
                 mac_address_raw = monitored_data['mac_address']
                 mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
-                print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
+                debug_print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
             else:
                 print(f"  ⚠️  测试过程中未检测到 MAC 地址")
             
@@ -5627,10 +5831,10 @@ def menu_start_flash(config_state):
                           flasher.session_id)
     
     # 显示日志目录信息
-    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
-    print(f"📋 Session ID: {flasher.session_id}")
+    debug_print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    debug_print(f"📋 Session ID: {flasher.session_id}")
     if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
-        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
+        debug_print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
     
     # If baud rate is set, use the set baud rate
     if config_state.get('baud_rate'):
