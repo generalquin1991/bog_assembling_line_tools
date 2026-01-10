@@ -38,8 +38,9 @@ ESP8266_DEFAULT_ADDRESSES = {
 # Default ESP32-C3 flash addresses
 ESP32C3_DEFAULT_ADDRESSES = {
     'bootloader': 0x0,
-    'partition-table': 0x8000,
-    'app': 0x10000,
+    'partition-table': 0x10000,
+    'ota': 0x15000,
+    'app': 0x20000,
 }
 
 
