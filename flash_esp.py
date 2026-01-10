@@ -4565,6 +4565,7 @@ def execute_test_only(config_state):
     sound_interval = 3.0  # Play sound every 3 seconds during button wait
     user_exit_requested = False  # Flag to track if user pressed ESC to exit
     button_test_esc_pressed = False  # Flag to track if ESC was pressed during button test
+    button_test_space_pressed = False  # Flag to track if SPACE was pressed to mark board error
     button_terminal_raw_mode = False  # Flag to track if terminal is in raw mode for button detection
     button_terminal_old_settings = None  # Store old terminal settings for button detection
     hw_version_input_success = False  # Flag to track if hardware version input was successful
@@ -4722,8 +4723,8 @@ def execute_test_only(config_state):
         print(f"  📊 开始监控日志（最长 {timeout:.0f} 秒，将循环比对关键字判断每项检测是否通过）...\n")
         
         while time.time() - start_time < timeout:
-            # Check if ESC was pressed during button test - exit immediately
-            if button_test_esc_pressed:
+            # Check if ESC or SPACE was pressed during button test - exit immediately
+            if button_test_esc_pressed or button_test_space_pressed:
                 break
             
             # Read available data from serial port
@@ -4943,7 +4944,7 @@ def execute_test_only(config_state):
                                     button_terminal_raw_mode = False
                                 
                                 # Initial prompt (will be refreshed dynamically)
-                                print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC退出]", end='', flush=True)
+                                print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC跳过/空格标记板卡错误]", end='', flush=True)
                                 log_file.write(f"[TEST STATUS] Button prompt detected, waiting for button press (press ESC to exit)\n")
                                 log_file.write(f"[DEBUG] Matched pattern: {pattern}, Line: {line_clean}\n")
                                 log_file.flush()
@@ -5256,9 +5257,9 @@ def execute_test_only(config_state):
                 current_time = time.time()
                 elapsed = current_time - button_prompt_time
                 
-                # Check for ESC key press (non-blocking)
+                # Check for ESC key or SPACE key press (non-blocking)
                 # Terminal is already in raw mode, so we can read characters immediately without Enter
-                esc_detected = False
+                key_detected = False
                 try:
                     import select
                     if sys.platform != 'win32' and button_terminal_raw_mode:  # Only check if terminal is in raw mode
@@ -5281,7 +5282,7 @@ def execute_test_only(config_state):
                                     except:
                                         break
                                 
-                                esc_detected = True
+                                key_detected = True
                                 button_test_done = True
                                 button_refresh_enabled = False
                                 button_test_esc_pressed = True  # Mark ESC was pressed - exit test immediately
@@ -5293,17 +5294,31 @@ def execute_test_only(config_state):
                                 log_file.flush()
                                 # Force stdout flush to ensure the message is displayed immediately
                                 sys.stdout.flush()
-                            # If it's not ESC, ignore the character (it's already consumed and won't be printed in raw mode)
+                            # Check if it's SPACE key (to mark board error)
+                            elif ch == ' ':  # SPACE key
+                                key_detected = True
+                                button_test_done = True
+                                button_refresh_enabled = False
+                                button_test_space_pressed = True  # Mark SPACE was pressed - board error
+                                monitored_data['button_test_result'] = 'BOARD_ERROR'
+                                # Clear the dynamic line and print board error message with immediate flush
+                                print(f"\r  \033[K\033[31m✗ 按键测试: 板卡错误（按空格标记）\033[0m", flush=True)
+                                print()  # Add newline to ensure the message is on its own line and visible
+                                log_file.write(f"[TEST STATUS] Button Test: BOARD_ERROR (SPACE pressed - board error marked by user)\n")
+                                log_file.flush()
+                                # Force stdout flush to ensure the message is displayed immediately
+                                sys.stdout.flush()
+                            # If it's not ESC or SPACE, ignore the character (it's already consumed and won't be printed in raw mode)
                 except (ImportError, OSError, AttributeError):
-                    # select/termios not available (e.g., Windows or non-terminal), skip ESC detection
+                    # select/termios not available (e.g., Windows or non-terminal), skip key detection
                     pass
                 
-                # Only refresh prompt if ESC was not detected
-                if not esc_detected:
+                # Only refresh prompt if no key was detected
+                if not key_detected:
                     # Refresh every 333ms (3 times per second)
                     if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= 0.333:
                         # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
-                        print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
+                        print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC跳过/空格标记板卡错误]", end='', flush=True)
                         last_button_refresh_time = current_time
                     
                     # Play sound every 3 seconds
@@ -5350,14 +5365,18 @@ def execute_test_only(config_state):
             
             time.sleep(0.001)  # Small delay for responsiveness
         
-        # Check if ESC was pressed during button test - exit immediately
+        # Check if ESC or SPACE was pressed during button test - exit immediately
         if button_test_esc_pressed:
             print("\n  \033[31m✗ 测试失败：按键未检测到，用户按ESC退出\033[0m")
             log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Button not detected, user pressed ESC to exit\n")
             log_file.flush()
+        elif button_test_space_pressed:
+            print("\n  \033[31m✗ 测试失败：板卡错误，用户按空格标记\033[0m")
+            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Board error, user pressed SPACE to mark\n")
+            log_file.flush()
         
-        # Check monitoring timeout (only if user didn't exit and ESC wasn't pressed)
-        if not user_exit_requested and not button_test_esc_pressed:
+        # Check monitoring timeout (only if user didn't exit and no key was pressed)
+        if not user_exit_requested and not button_test_esc_pressed and not button_test_space_pressed:
             elapsed_time = time.time() - start_time
             if elapsed_time >= timeout:
                 # Clear any active dynamic prompt line before printing timeout message
@@ -5399,12 +5418,18 @@ def execute_test_only(config_state):
         if log_file:
             log_file.close()
         
-        # If ESC was pressed during button test, exit immediately with failure
+        # If ESC or SPACE was pressed during button test, exit immediately with failure
         if button_test_esc_pressed:
             print("\n" + "=" * 80)
             print("测试失败")
             print("=" * 80)
             print("  ✗ 按键测试未通过：用户按ESC退出（按键未检测到）")
+            print("=" * 80)
+        elif button_test_space_pressed:
+            print("\n" + "=" * 80)
+            print("测试失败")
+            print("=" * 80)
+            print("  ✗ 按键测试未通过：板卡错误（用户按空格标记）")
             print("=" * 80)
             print(f"\n📁 设备日志已保存到: {log_filepath}")
             
@@ -5502,6 +5527,8 @@ def execute_test_only(config_state):
             button_result = monitored_data.get('button_test_result')
             if button_result == 'PASS':
                 summary_items.append(("按键测试", "\033[32m✓ 通过\033[0m"))
+            elif button_result == 'BOARD_ERROR':
+                summary_items.append(("按键测试", "\033[31m✗ 板卡错误（用户按空格标记）\033[0m"))
             elif button_result == 'FAIL':
                 summary_items.append(("按键测试", "\033[31m✗ 未通过（未检测到按键）\033[0m"))
             elif button_result == 'USER_EXIT':
