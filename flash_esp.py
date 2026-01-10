@@ -1065,6 +1065,7 @@ class ESPFlasher:
             # 状态跟踪：压缩数据传输完成，等待Flash写入
             compressed_upload_complete = False
             flash_write_started = False
+            is_secure_download_mode = False  # 检测是否处于 Secure Download Mode
             
             # 使用迭代器逐行读取，确保捕获所有输出
             try:
@@ -1081,6 +1082,33 @@ class ESPFlasher:
                         unified_log_file.flush()  # 确保立即写入
                     
                     line = line.rstrip()
+                    
+                    # 检测 Secure Download Mode 错误
+                    if not is_secure_download_mode:
+                        line_lower = line.lower()
+                        if ("secure download mode" in line_lower or 
+                            "unsupportedcommanderror" in line_lower or
+                            "not supported in secure download mode" in line_lower or
+                            "stub flasher is not supported in secure download mode" in line_lower):
+                            is_secure_download_mode = True
+                            # 检测到错误后，立即跳过后续的错误堆栈输出
+                            # 但先处理当前行（可能包含有用的连接信息）
+                    
+                    # 如果已检测到 Secure Download Mode 错误，跳过打印后续的错误堆栈信息
+                    if is_secure_download_mode:
+                        line_lower = line.lower()
+                        # 跳过 Traceback、File、raise 等错误堆栈相关的行
+                        # 也跳过警告信息（因为我们已经会显示友好的提示）
+                        if any(keyword in line_lower for keyword in [
+                            'traceback', 'file "', 'raise ', 'unsupportedcommanderror',
+                            'fatalerror', 'exception:', 'error:', 'warning: stub flasher',
+                            'sys.exit', '^' * 5  # 跳过堆栈跟踪的标记行
+                        ]):
+                            # 只写入日志文件，不打印到控制台
+                            continue
+                        # 如果行包含 "Chip type" 和 "Secure Download Mode"，也跳过（避免重复显示）
+                        if 'chip type' in line_lower and 'secure download mode' in line_lower:
+                            continue
                     
                     # 跳过完全空的行
                     if not line.strip():
@@ -1295,6 +1323,11 @@ class ESPFlasher:
                                 progress_line_active = False
                         
                         # 显示所有其他信息（避免重复显示相同行）
+                        # 如果已检测到 Secure Download Mode 错误，跳过显示所有输出（避免显示错误堆栈）
+                        if is_secure_download_mode:
+                            # 只写入日志文件，不打印到控制台
+                            continue
+                        
                         if line != last_line:
                             # 根据内容类型格式化显示
                             if 'warning' in line_lower or 'deprecated' in line_lower:
@@ -1411,6 +1444,23 @@ class ESPFlasher:
                 
                 return True
             else:
+                # 检查是否是 Secure Download Mode 错误
+                if is_secure_download_mode:
+                    mode = self.config.get('mode', 'unknown')
+                    if mode == 'develop':
+                        # 在开发模式下，如果检测到加密固件，给出警告
+                        print(f"\n\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m")
+                        print(f"  \033[33m⚠️  该设备已处于安全下载模式，无法在开发模式下烧录未加密固件\033[0m")
+                        print(f"  \033[33m⚠️  请使用 Factory Mode 进行烧录，或先擦除 Flash 后重新烧录未加密固件\033[0m")
+                        if unified_log_file:
+                            unified_log_file.write(f"\n[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] SECURE_DOWNLOAD_MODE_DETECTED: Device has encrypted firmware\n")
+                            unified_log_file.write(f"[FLASH STATUS] Encryption Status: ENCRYPTED (Secure Download Mode)\n")
+                            unified_log_file.flush()
+                        save_operation_history("Flash Failed - Secure Download Mode", 
+                                              f"Port: {port}, Firmware: {firmware_path}, Device in Secure Download Mode", 
+                                              self.session_id)
+                        return False
+                
                 print("\n\n✗ Firmware flashing failed!")
                 if unified_log_file:
                     print(f"📝 All logs saved to: {self.unified_log_filepath}")
@@ -2775,23 +2825,14 @@ def menu_mode_main(config_state, mode_type):
             print_centered("Please select operation", 80)
             print()
             
-            # Different menu for develop mode vs factory mode
-            if mode_type == 'develop':
-                # Develop mode: show operation options directly
-                mode_menu_choices = [
-                    ('  🔄  Program + Test', 'program_and_test'),
-                    ('  📝  Program Only', 'program_only'),
-                    ('  🧪  Test Only', 'test_only'),
-                    ('  ⚙️  Settings', 'settings'),
-                    ('  ←  Back to Main Menu', 'back')
-                ]
-            else:
-                # Factory mode: use original menu
-                mode_menu_choices = [
-                    ('  ▶️  Start Flashing', 'start'),
-                    ('  ⚙️  Settings', 'settings'),
-                    ('  ←  Back to Main Menu', 'back')
-                ]
+            # Unified menu for both develop and factory mode
+            mode_menu_choices = [
+                ('  🔄  Program + Test', 'program_and_test'),
+                ('  📝  Program Only', 'program_only'),
+                ('  🧪  Test Only', 'test_only'),
+                ('  ⚙️  Settings', 'settings'),
+                ('  ←  Back to Main Menu', 'back')
+            ]
             
             # Set default to last selected action if available
             default_action = None
@@ -2817,38 +2858,22 @@ def menu_mode_main(config_state, mode_type):
             action = answer['action']
             last_selected_action = action  # Remember current selection
             
-            # Handle actions based on mode
-            if mode_type == 'develop':
-                # Develop mode operations
-                if action == 'program_and_test':
-                    execute_program_and_test(config_state)
-                    # After operation, return to menu (user already pressed Enter in the function)
-                    continue
-                elif action == 'program_only':
-                    execute_program_only(config_state)
-                    # After operation, return to menu (user already pressed Enter in the function)
-                    continue
-                elif action == 'test_only':
-                    # 开发模式下：只运行测试流程（不烧录）
-                    execute_test_only(config_state)
-                    # After operation, return to menu (user already pressed Enter in the function)
-                    continue
-                elif action == 'settings':
-                    config_state = menu_settings(config_state, mode_type)
-            else:
-                # Factory mode: use original flow
-                if action == 'start':
-                    if menu_start_flash(config_state):
-                        continue_choice = [
-                            inquirer.Confirm('continue',
-                                            message="Flashing completed, continue?",
-                                            default=True)
-                        ]
-                        cont_answer = inquirer.prompt(continue_choice)
-                        if not cont_answer or not cont_answer.get('continue', False):
-                            return config_state
-                elif action == 'settings':
-                    config_state = menu_settings(config_state, mode_type)
+            # Handle actions - unified for both develop and factory mode
+            if action == 'program_and_test':
+                execute_program_and_test(config_state)
+                # After operation, return to menu (user already pressed Enter in the function)
+                continue
+            elif action == 'program_only':
+                execute_program_only(config_state)
+                # After operation, return to menu (user already pressed Enter in the function)
+                continue
+            elif action == 'test_only':
+                # Test only mode: run test flow without flashing
+                execute_test_only(config_state)
+                # After operation, return to menu (user already pressed Enter in the function)
+                continue
+            elif action == 'settings':
+                config_state = menu_settings(config_state, mode_type)
                 
         except KeyboardInterrupt:
             return config_state
@@ -3930,86 +3955,15 @@ def program(flasher, config_state):
     return success
 
 
-def test(flasher, config_state):
-    """执行测试步骤
-    
-    在 dev 模式下：直接复用 Test Only 的测试流程；
-    在 factory 模式下：继续使用 procedures 中的测试流程。
+def _create_and_setup_flasher(config_state):
+    """创建并设置 ESPFlasher 实例
     
     Args:
-        flasher: ESPFlasher 实例
         config_state: 配置状态字典
     
     Returns:
-        bool: 成功返回 True，失败返回 False
+        ESPFlasher: 配置好的 flasher 实例
     """
-    config = flasher.config
-    mode = config.get('mode') or config_state.get('mode')
-    
-    # 开发模式：测试流程与 Test Only 完全一致
-    if mode == 'develop':
-        # 构造 Test Only 所需的精简 config_state
-        test_state = {
-            'port': config_state.get('port') or config.get('serial_port'),
-            'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
-            'config_path': flasher.config_path,
-            'mode_name': config_state.get('mode_name', 'Develop Mode')
-        }
-        return execute_test_only(test_state)
-    
-    # 生产模式：仍然使用 procedures 中的测试流程
-    # 查找测试 procedure（通常是 factory_test_procedure）
-    test_procedure = None
-    for proc in config.get('procedures', []):
-        if proc.get('name', '').endswith('_test_procedure'):
-            test_procedure = proc
-            break
-    
-    if not test_procedure:
-        print("⚠️  No test procedure found in config")
-        return False
-    
-    # 执行测试 procedure 的所有步骤
-    print(f"\nExecuting Test Procedure: {test_procedure.get('name', 'unknown')}")
-    print(f"Description: {test_procedure.get('description', '')}")
-    print("-" * 80)
-    
-    # 在统一日志文件中记录过程开始
-    if hasattr(flasher, 'unified_log_file') and flasher.unified_log_file:
-        flasher.unified_log_file.write(f"\n{'='*80}\n")
-        flasher.unified_log_file.write(f"Test Procedure: {test_procedure.get('name', 'unknown')}\n")
-        flasher.unified_log_file.write(f"Description: {test_procedure.get('description', '')}\n")
-        flasher.unified_log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        flasher.unified_log_file.write(f"{'='*80}\n\n")
-        flasher.unified_log_file.flush()
-    
-    # 记录流程开始
-    session_id = getattr(flasher, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
-    save_operation_history(f"Test Procedure Started: {test_procedure.get('name', 'unknown')}", 
-                          test_procedure.get('description', ''), 
-                          session_id)
-    
-    # 执行测试步骤
-    success = flasher._execute_steps(test_procedure.get('steps', []))
-    
-    if success:
-        save_operation_history(f"Test Procedure Completed: {test_procedure.get('name', 'unknown')}", 
-                              "Execution successful", 
-                              session_id)
-    else:
-        save_operation_history(f"Test Procedure Failed: {test_procedure.get('name', 'unknown')}", 
-                              "Execution failed", 
-                              session_id)
-    
-    return success
-
-
-def execute_program_and_test(config_state):
-    """Execute program + test (full procedures)"""
-    clear_screen()
-    print_header("Program + Test", 80)
-    
-    # Create flasher instance
     flasher = ESPFlasher(config_state['config_path'])
     flasher.config['serial_port'] = config_state['port']
     flasher.config['firmware_path'] = config_state['firmware']
@@ -4024,73 +3978,116 @@ def execute_program_and_test(config_state):
     if config_state.get('device_code_rule'):
         flasher.config['device_code_rule'] = config_state['device_code_rule']
     
+    return flasher
+
+
+def _display_operation_header(flasher, operation_name):
+    """显示操作头部信息（日志目录、Session ID等）
+    
+    Args:
+        flasher: ESPFlasher 实例
+        operation_name: 操作名称（用于日志显示）
+    """
+    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+    print(f"📋 Session ID: {flasher.session_id}")
+    if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
+        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
+
+
+def _wait_for_user_return():
+    """等待用户按 Enter 返回"""
+    print("\nPress Enter to return...")
+    try:
+        input()
+    except (KeyboardInterrupt, EOFError):
+        pass
+
+
+def _handle_operation_error(error_msg, exception=None):
+    """处理操作错误
+    
+    Args:
+        error_msg: 错误消息
+        exception: 异常对象（可选）
+    """
+    print(f"\n✗ {error_msg}")
+    if exception:
+        import traceback
+        traceback.print_exc()
+    _wait_for_user_return()
+
+
+def test(flasher, config_state):
+    """执行测试步骤
+    
+    统一使用 execute_test_only() 的测试流程，适用于开发模式和生产模式。
+    测试配置从配置文件的 procedures 中读取。
+    
+    Args:
+        flasher: ESPFlasher 实例
+        config_state: 配置状态字典
+    
+    Returns:
+        bool: 成功返回 True，失败返回 False
+    """
+    config = flasher.config
+    
+    # 统一使用 execute_test_only() 的测试流程
+    # 构造 Test Only 所需的 config_state
+    test_state = {
+        'port': config_state.get('port') or config.get('serial_port'),
+        'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
+        'config_path': flasher.config_path,
+        'mode_name': config_state.get('mode_name', 'Test Mode')
+    }
+    
+    return execute_test_only(test_state)
+
+
+def execute_program_and_test(config_state):
+    """Execute program + test (full procedures)"""
+    clear_screen()
+    print_header("Program + Test", 80)
+    
+    # Create and setup flasher instance
+    flasher = _create_and_setup_flasher(config_state)
+    
     # Record operation
     save_operation_history("Program + Test Started", 
                           f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
                           flasher.session_id)
     
     # Display log directory info
-    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
-    print(f"📋 Session ID: {flasher.session_id}")
-    if hasattr(flasher, 'unified_log_filepath') and flasher.unified_log_filepath:
-        print(f"📝 Unified monitor log: {flasher.unified_log_filepath}\n")
+    _display_operation_header(flasher, "Program + Test")
     
     try:
         # 1. Basic check UART
         print("\n[Step 1/3] Checking UART...")
         if not basic_check_uart(flasher, config_state):
-            print("\n✗ UART check failed")
-            print("\nPress Enter to return...")
-            try:
-                input()
-            except (KeyboardInterrupt, EOFError):
-                pass
+            _handle_operation_error("UART check failed")
             return False
         
         # 2. Program (flash firmware)
         print("\n[Step 2/3] Programming firmware...")
         if not program(flasher, config_state):
-            print("\n✗ Program failed")
-            print("\nPress Enter to return...")
-            try:
-                input()
-            except (KeyboardInterrupt, EOFError):
-                pass
+            _handle_operation_error("Program failed")
             return False
         
-
         # 3. Test
         print("\n[Step 3/3] Running tests...")
         if not test(flasher, config_state):
-            print("\n✗ Test failed")
-            print("\nPress Enter to return...")
-            try:
-                input()
-            except (KeyboardInterrupt, EOFError):
-                pass
+            _handle_operation_error("Test failed")
             return False
         
         print("\n✓ Program + Test completed successfully")
-        print("\nPress Enter to return...")
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
-        
+        _wait_for_user_return()
         return True
         
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
         return False
     except Exception as e:
-        print(f"\n✗ Unexpected error occurred: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nPress Enter to return...")
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
+        _handle_operation_error("Unexpected error occurred", e)
         return False
 
 
@@ -4099,16 +4096,8 @@ def execute_program_only(config_state):
     clear_screen()
     print_header("Program Only", 80)
     
-    # Create flasher instance
-    flasher = ESPFlasher(config_state['config_path'])
-    flasher.config['serial_port'] = config_state['port']
-    flasher.config['firmware_path'] = config_state['firmware']
-    
-    # Update config with state values
-    if config_state.get('baud_rate'):
-        flasher.config['baud_rate'] = config_state['baud_rate']
-    if config_state.get('monitor_baud'):
-        flasher.config['monitor_baud'] = config_state['monitor_baud']
+    # Create and setup flasher instance
+    flasher = _create_and_setup_flasher(config_state)
     
     # Record operation
     save_operation_history("Program Only Started", 
@@ -4116,19 +4105,13 @@ def execute_program_only(config_state):
                           flasher.session_id)
     
     # Display log directory info
-    print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
-    print(f"📋 Session ID: {flasher.session_id}\n")
+    _display_operation_header(flasher, "Program Only")
     
     try:
         # 1. Basic check UART
         print("\n[Step 1/2] Checking UART...")
         if not basic_check_uart(flasher, config_state):
-            print("\n✗ UART check failed")
-            print("\nPress Enter to return...")
-            try:
-                input()
-            except (KeyboardInterrupt, EOFError):
-                pass
+            _handle_operation_error("UART check failed")
             return False
         
         # 2. Program (flash firmware)
@@ -4144,26 +4127,14 @@ def execute_program_only(config_state):
         if SOUND_ENABLED:
             play_completion_sound()
         
-        print("\nPress Enter to return...")
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
-        
+        _wait_for_user_return()
         return success
         
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
         return False
     except Exception as e:
-        print(f"\n✗ Unexpected error occurred: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\nPress Enter to return...")
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
+        _handle_operation_error("Unexpected error occurred", e)
         return False
 
 
@@ -4172,9 +4143,11 @@ def run_esptool_command(args):
     调用 esptool.run 子命令（如 run），并捕获其标准输出，便于上层解析 MAC 等信息。
     
     返回:
-        (exit_code, output_text)
+        (exit_code, output_text, is_secure_download_mode)
+        is_secure_download_mode: True 表示检测到设备处于 Secure Download Mode（已加密）
     """
     import esptool
+    from esptool import FatalError
     
     print("\n================ esptool 调用 ================")
     print("esptool 参数:", " ".join(args))
@@ -4183,11 +4156,20 @@ def run_esptool_command(args):
     old_argv = sys.argv
     sys.argv = ["esptool.py"] + args
     buf = io.StringIO()
+    is_secure_download_mode = False
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             try:
                 esptool.main()
                 code = 0
+            except FatalError as e:
+                # 捕获 FatalError 并检查是否是 Secure Download Mode 错误
+                error_msg = str(e)
+                if "Secure Download Mode" in error_msg or "run command is not available" in error_msg:
+                    is_secure_download_mode = True
+                    # 将错误信息写入缓冲区，以便上层可以解析
+                    print(f"FatalError: {error_msg}", file=buf)
+                code = 1
             except SystemExit as e:
                 code = e.code if isinstance(e.code, int) else 0
     finally:
@@ -4199,7 +4181,7 @@ def run_esptool_command(args):
         print(output, end="")
     if code != 0:
         print(f"esptool 退出码: {code}")
-    return code, output
+    return code, output, is_secure_download_mode
 
 
 def execute_test_only(config_state):
@@ -4317,6 +4299,7 @@ def execute_test_only(config_state):
         'model_number_result': None,
         'factory_mode_detected': False,
         'application_mode_detected': False,
+        'encrypted_firmware_detected': False,
         'factory_config_complete': False
     }
     
@@ -4377,7 +4360,7 @@ def execute_test_only(config_state):
         
         # Call esptool run command
         print(f"  → 调用 esptool run（波特率: {bootloader_baud}）...")
-        run_result, run_output = run_esptool_command([
+        run_result, run_output, is_secure_download_mode = run_esptool_command([
             "--port",
             normalized_port,
             "--baud",
@@ -4388,6 +4371,36 @@ def execute_test_only(config_state):
         # Record the time when run command completes
         run_end_time = time.time()
         run_duration = (run_end_time - run_start_time) * 1000
+        
+        # Check if device is in Secure Download Mode (encrypted firmware detected)
+        if is_secure_download_mode:
+            # 检测到设备已烧录加密固件
+            mode_type = config_state.get('mode', 'develop')
+            if mode_type == 'develop':
+                # 在开发模式下，如果检测到加密固件，给出警告
+                print(f"\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m")
+                print(f"  \033[33m⚠️  该设备已处于安全下载模式，无法使用 esptool run 命令\033[0m")
+                print(f"  \033[33m⚠️  请使用 Factory Mode 进行测试，或重新烧录未加密的固件\033[0m")
+                log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] SECURE_DOWNLOAD_MODE_DETECTED: Device has encrypted firmware\n")
+                log_file.write(f"[TEST STATUS] Encryption Status: ENCRYPTED (Secure Download Mode)\n")
+                log_file.flush()
+                
+                # 记录到 monitored_data 中，类似于 factory_mode_detected 和 application_mode_detected
+                monitored_data['encrypted_firmware_detected'] = True
+                
+                # 在开发模式下，如果检测到加密固件，应该拒绝测试
+                print(f"\n  ✗ 开发模式下检测到加密固件，拒绝本次测试")
+                
+                # 确保日志文件已关闭
+                if log_file:
+                    log_file.close()
+                
+                print(f"\nPress Enter to return...")
+                try:
+                    input()
+                except (KeyboardInterrupt, EOFError):
+                    pass
+                return False
         
         if run_result != 0:
             print(f"  ⚠️  esptool run 命令执行异常（退出码: {run_result}）")
@@ -4513,7 +4526,7 @@ def execute_test_only(config_state):
                         elapsed = time.time() - last_data_time
                         if elapsed > 2.0 and not no_data_warning_printed:
                             print(f"  ⚠️  等待设备输出日志中... (已等待 {elapsed:.1f}秒)")
-                            print(f"  [调试] 串口状态: is_open={ser.is_open}, in_waiting={ser.in_waiting}, baudrate={ser.baudrate}")
+                            # print(f"  [调试] 串口状态: is_open={ser.is_open}, in_waiting={ser.in_waiting}, baudrate={ser.baudrate}")
                             no_data_warning_printed = True
             except Exception as e:
                 print(f"  ⚠️  读取串口数据时出错: {e}")
@@ -4748,11 +4761,15 @@ def execute_test_only(config_state):
                                 break
                         
                         # If no explicit success message, fallback to checking for serial number prompt
-                        if not success_detected:
+                        # BUT: Only if we haven't already failed after max retries
+                        # If hw_version_retry_count > max_hw_version_retries, we've already marked it as failed
+                        # and should not infer success from serial number prompt
+                        if not success_detected and hw_version_retry_count <= max_hw_version_retries:
                             sn_patterns = log_patterns.get('serial_number_prompt', [])
                             for pattern in sn_patterns:
                                 if pattern.lower() in line_clean.lower():
                                     # Hardware version was accepted (we're now at serial number prompt)
+                                    # Only mark as success if we haven't exceeded max retries
                                     hw_version_input_success = True
                                     if hw_version_retry_count > 0:
                                         print(f"  \033[32m✓ 硬件版本: 输入成功 ({monitored_data.get('hw_version', '').strip()}) [通过序列号提示判断，重试 {hw_version_retry_count} 次后成功]\033[0m")
@@ -5405,7 +5422,11 @@ def execute_test_only(config_state):
 
 
 def menu_start_flash(config_state):
-    """Start flashing menu - complete automated process"""
+    """Start flashing menu - complete automated process
+    
+    DEPRECATED: This function is deprecated. Use execute_program_and_test() instead.
+    This function is kept for backward compatibility but should not be used in new code.
+    """
     clear_screen()
     print_header("Start Flashing", 80)
     
@@ -5824,8 +5845,8 @@ def main():
     
     # 执行烧录或procedures
     try:
-        # 如果是开发模式且有procedures定义，执行procedures
-        if args.mode == 'develop' and 'procedures' in flasher.config and flasher.config['procedures']:
+        # 如果配置中有procedures定义，执行procedures（develop 和 factory 模式都支持）
+        if 'procedures' in flasher.config and flasher.config['procedures']:
             success = flasher.execute_procedures()
         else:
             success = flasher.flash_firmware()
