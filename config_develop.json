@@ -1,7 +1,7 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.wchusbserial110",
+  "serial_port": "/dev/cu.wchusbserial2110",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_3_8.bin",
   "flash_mode": "dio",
@@ -15,10 +15,10 @@
   "reset_after_flash": false,
   "encrypt": false,
   "secure_boot": false,
-  "version_string": "P02V02R00\r\n",
+  "version_string": "P02V02R00",
   "mode_number": "20065",
   "batch": "SN: YYMMDD+序号",
-  "print_device_logs": true,
+  "print_device_logs": false,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
   "serial_port_keywords": [
@@ -280,5 +280,6 @@
         }
       ]
     }
-  ]
+  ],
+  "device_code_rule": "64YYWWXnnnnn"
 }

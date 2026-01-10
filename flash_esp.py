@@ -35,6 +35,20 @@ except ImportError:
         return False
     SOUND_ENABLED = False
 
+# Import SN generator
+try:
+    from sn_generator import generate_sn, update_sn_status, HashVerificationError
+    SN_GENERATOR_ENABLED = True
+except ImportError:
+    # If sn_generator is not available, define dummy functions
+    def generate_sn(*args, **kwargs):
+        return None
+    def update_sn_status(*args, **kwargs):
+        return False
+    class HashVerificationError(Exception):
+        pass
+    SN_GENERATOR_ENABLED = False
+
 
 # 全局开关：控制是否打印设备日志（默认开启）
 PRINT_DEVICE_LOGS = True
@@ -331,6 +345,28 @@ class SerialMonitor:
                 mac = self.device_info['mac_address'].replace(':', '').replace('-', '')
                 return mac[-6:].upper()
             return 'UNKNOWN'
+        elif rule == '64YYWWXnnnnn' or rule.startswith('64'):
+            # 使用新的序列号生成器（格式: 64YYWWXnnnnn）
+            if SN_GENERATOR_ENABLED:
+                try:
+                    sn = generate_sn()
+                    if sn:
+                        # 保存生成的序列号到device_info，用于后续状态更新
+                        self.device_info['generated_sn'] = sn
+                        print(f"\033[92m✓ 序列号生成成功: {sn}\033[0m")
+                        return sn
+                    else:
+                        print(f"\033[91m✗ 序列号生成失败: 返回值为空\033[0m")
+                        return None
+                except HashVerificationError as e:
+                    print(f"\033[91m✗ 序列号生成器hash验证失败: {e}\033[0m")
+                    return None
+                except Exception as e:
+                    print(f"⚠️  警告: 序列号生成失败: {e}")
+                    return None
+            else:
+                print("⚠️  警告: 序列号生成器未启用")
+                return None
         else:
             # 自定义规则或默认
             return rule
@@ -2794,6 +2830,8 @@ def menu_mode_main(config_state, mode_type):
             config_state['baud_rate'] = config_state.get('baud_rate') or default_config.get('baud_rate')
             config_state['firmware'] = config_state.get('firmware') or default_config.get('firmware_path')
             config_state['monitor_baud'] = config_state.get('monitor_baud') or default_config.get('monitor_baud')
+            config_state['version_string'] = config_state.get('version_string') or default_config.get('version_string')
+            config_state['device_code_rule'] = config_state.get('device_code_rule') or default_config.get('device_code_rule')
             # Load print_device_logs setting and update global variable
             global PRINT_DEVICE_LOGS
             PRINT_DEVICE_LOGS = default_config.get('print_device_logs', True)
@@ -3375,7 +3413,16 @@ def menu_set_version_string(config_state):
     # Load default configuration
     default_config = load_default_config(config_state.get('config_path', ''))
     default_version = default_config.get('version_string', '')
-    current_version = config_state.get('version_string', default_version)
+    # Strip whitespace and newlines from version string for display
+    if default_version:
+        default_version = default_version.strip()
+    current_version = config_state.get('version_string', '')
+    # If current_version is not set, use default_version
+    if not current_version:
+        current_version = default_version
+    # Strip whitespace from current version for display
+    if current_version:
+        current_version = current_version.strip()
     
     # Display current and default values
     print_section_header("Current Configuration", 80)
@@ -3396,7 +3443,9 @@ def menu_set_version_string(config_state):
     if not answer:
         return config_state
     
-    config_state['version_string'] = answer['version']
+    # Save version string (strip whitespace but preserve user input)
+    version_value = answer['version'].strip() if answer.get('version') else ''
+    config_state['version_string'] = version_value
     print(f"\n✓ Version string set: {config_state['version_string']}")
     
     return config_state
@@ -3422,9 +3471,7 @@ def menu_set_device_code_rule(config_state):
     print()
     
     rule_choices = [
-        ('SN: YYMMDD+Sequence (e.g., SN240101001)', 'SN: YYMMDD+序号'),
-        ('Last 6 digits of MAC address', 'MAC后6位'),
-        ('Custom rule', 'custom'),
+        ('64YYWWXnnnnn (New SN Generator, e.g., 642602110001)', '64YYWWXnnnnn'),
         ('Back', 'back')
     ]
     
@@ -3435,11 +3482,15 @@ def menu_set_device_code_rule(config_state):
             default_idx = idx
             break
     
+    # If current rule is not 64YYWWXnnnnn, default to it
+    if default_idx is None:
+        default_idx = 0  # Default to 64YYWWXnnnnn
+    
     rule_question = [
         inquirer.List('rule',
                      message="Please select encoding rule",
                      choices=rule_choices,
-                     default=default_idx if default_idx is not None else None,
+                     default=default_idx,
                      carousel=True)  # Enable circular navigation
     ]
     
@@ -3447,18 +3498,8 @@ def menu_set_device_code_rule(config_state):
     if not answer or answer['rule'] == 'back':
         return config_state
     
-    if answer['rule'] == 'custom':
-        custom_question = [
-            inquirer.Text('custom_rule',
-                         message="Please enter custom encoding rule",
-                         default=current_rule)
-        ]
-        custom_answer = inquirer.prompt(custom_question)
-        if custom_answer:
-            config_state['device_code_rule'] = custom_answer.get('custom_rule', '')
-    else:
-        config_state['device_code_rule'] = answer['rule']
-    
+    # Only 64YYWWXnnnnn is allowed - force set it
+    config_state['device_code_rule'] = '64YYWWXnnnnn'
     print(f"\n✓ Device code rule set: {config_state['device_code_rule']}")
     
     return config_state
@@ -4801,12 +4842,36 @@ def execute_test_only(config_state):
                                             device_code = mac[-6:].upper()
                                         else:
                                             device_code = 'UNKNOWN'
+                                    elif device_code_rule == '64YYWWXnnnnn' or device_code_rule.startswith('64'):
+                                        # 使用新的序列号生成器（格式: 64YYWWXnnnnn）
+                                        if SN_GENERATOR_ENABLED:
+                                            try:
+                                                device_code = generate_sn()
+                                                if device_code:
+                                                    # 保存生成的序列号到monitored_data，用于后续状态更新
+                                                    monitored_data['generated_sn'] = device_code
+                                                    print(f"\033[92m✓ 序列号生成成功: {device_code}\033[0m")
+                                                else:
+                                                    print(f"\033[91m✗ 序列号生成失败: 返回值为空\033[0m")
+                                                    device_code = None
+                                            except HashVerificationError as e:
+                                                print(f"\033[91m✗ 序列号生成器hash验证失败: {e}\033[0m")
+                                                device_code = None
+                                            except Exception as e:
+                                                print(f"\033[91m✗ 序列号生成失败: {e}\033[0m")
+                                                device_code = None
+                                        else:
+                                            print("⚠️  警告: 序列号生成器未启用")
+                                            device_code = None
                                     else:
                                         device_code = device_code_rule
                                 else:
                                     device_code = config_state.get('default_sn') or config.get('default_sn', 'DEFAULT')
                                 
                                 if device_code:
+                                    # 保存生成的序列号到monitored_data，用于后续状态更新
+                                    if device_code.startswith('64') or len(device_code) == 12:
+                                        monitored_data['generated_sn'] = device_code
                                     time.sleep(0.3)
                                     clean_input = device_code.replace('\n', '').replace('\r', '')
                                     ser.write((clean_input + '\n').encode('utf-8'))
@@ -5250,6 +5315,34 @@ def execute_test_only(config_state):
                 print(f"  \033[33m⚠️  有 {total_tests - passed_tests} 项未通过\033[0m")
         print("=" * 80)
         print(f"\n📁 完整日志已保存到: {log_filepath}")
+        
+        # ========== Update SN status if using SN generator ==========
+        generated_sn = monitored_data.get('generated_sn')
+        device_code = monitored_data.get('model_number') or monitored_data.get('serial_number')
+        sn_to_update = generated_sn or device_code
+        
+        if SN_GENERATOR_ENABLED and sn_to_update and (sn_to_update.startswith('64') or len(sn_to_update) == 12):
+            # 判断是否为新的序列号格式（64YYWWXnnnnn，长度为12）
+            try:
+                # 判断测试是否成功（所有关键测试通过）
+                test_success = (passed_tests == total_tests) if total_tests > 0 else False
+                
+                if test_success:
+                    # 测试成功，标记为占用成功
+                    if update_sn_status(sn_to_update, 'occupied'):
+                        print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）\033[0m")
+                    else:
+                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
+                else:
+                    # 测试失败，标记为失败
+                    if update_sn_status(sn_to_update, 'failed'):
+                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 占用失败（状态: failed）\033[0m")
+                    else:
+                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
+            except HashVerificationError as e:
+                print(f"\n⚠️  警告: 序列号状态更新失败（hash验证失败）: {e}")
+            except Exception as e:
+                print(f"\n⚠️  警告: 序列号状态更新失败: {e}")
         
         # Play completion sound when test is finished
         if SOUND_ENABLED:
