@@ -5613,6 +5613,7 @@ def execute_test_only(config_state):
         generated_sn = monitored_data.get('generated_sn')
         device_code = monitored_data.get('model_number') or monitored_data.get('serial_number')
         sn_to_update = generated_sn or device_code
+        mac_address = monitored_data.get('mac_address')  # 获取MAC地址
         
         if SN_GENERATOR_ENABLED and sn_to_update and (sn_to_update.startswith('64') or len(sn_to_update) == 12):
             # 判断是否为新的序列号格式（64YYWWXnnnnn，长度为12）
@@ -5622,14 +5623,16 @@ def execute_test_only(config_state):
                 
                 if test_success:
                     # 测试成功，标记为占用成功
-                    if update_sn_status(sn_to_update, 'occupied'):
-                        debug_print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）\033[0m")
+                    if update_sn_status(sn_to_update, 'occupied', mac_address=mac_address):
+                        mac_info = f" (MAC: {mac_address})" if mac_address else ""
+                        debug_print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）{mac_info}\033[0m")
                     else:
                         print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
                 else:
                     # 测试失败，标记为失败
-                    if update_sn_status(sn_to_update, 'failed'):
-                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 占用失败（状态: failed）\033[0m")
+                    if update_sn_status(sn_to_update, 'failed', mac_address=mac_address):
+                        mac_info = f" (MAC: {mac_address})" if mac_address else ""
+                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 占用失败（状态: failed）{mac_info}\033[0m")
                     else:
                         print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
             except HashVerificationError as e:

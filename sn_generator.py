@@ -98,20 +98,21 @@ def save_sn_config(config: dict, config_path: str = "sn_config.json") -> bool:
 
 def calculate_entry_hash(entry: dict) -> str:
     """
-    计算单个日志条目的哈希值（基于sn, computer_id, week, generated_at四个属性）
+    计算单个日志条目的哈希值（基于sn, computer_id, week, generated_at, mac_address五个属性）
     
     Args:
-        entry: 日志条目字典，必须包含 sn, computer_id, week, generated_at
+        entry: 日志条目字典，必须包含 sn, computer_id, week, generated_at，可选包含 mac_address
         
     Returns:
         str: SHA256哈希值
     """
-    # 只使用这四个属性计算hash
+    # 使用这五个属性计算hash（mac_address如果没有则使用空字符串）
     hash_data = {
         'sn': entry.get('sn', ''),
         'computer_id': entry.get('computer_id', 0),
         'week': entry.get('week', ''),
-        'generated_at': entry.get('generated_at', '')
+        'generated_at': entry.get('generated_at', ''),
+        'mac_address': entry.get('mac_address', '')
     }
     # 转换为JSON字符串（排序键以确保一致性）
     hash_json = json.dumps(hash_data, sort_keys=True, ensure_ascii=False)
@@ -239,22 +240,24 @@ def save_sn_logs(logs: list, log_path: str = "all_sn_logs.json") -> bool:
         bool: 是否保存成功
     """
     try:
-        # 为每个条目计算并添加hash（如果还没有）
-        for entry in logs:
-            if '_entry_hash' not in entry:
-                # 只基于四个核心属性计算hash
-                entry['_entry_hash'] = calculate_entry_hash(entry)
+        # 按 generated_at 从新到旧排序（最新的在最前面）
+        logs_sorted = sorted(logs, key=lambda x: x.get('generated_at', ''), reverse=True)
+        
+        # 为每个条目计算并添加hash（使用新算法，包含mac_address）
+        for entry in logs_sorted:
+            # 总是重新计算hash，确保使用最新的算法（包含mac_address）
+            entry['_entry_hash'] = calculate_entry_hash(entry)
         
         # 计算整体哈希值（排除_entry_hash字段）
-        hash_value = calculate_logs_hash(logs)
+        hash_value = calculate_logs_hash(logs_sorted)
         
-        # 构建包含哈希的数据结构
+        # 构建包含哈希的数据结构（元数据字段在前，logs 在后）
         data = {
-            'logs': logs,
             '_hash': hash_value,
             '_hash_algorithm': 'SHA256',
-            '_entry_hash_fields': ['sn', 'computer_id', 'week', 'generated_at'],
-            '_note': 'Do not modify this file manually. Both _entry_hash and _hash fields are used to verify data integrity.'
+            '_entry_hash_fields': ['sn', 'computer_id', 'week', 'generated_at', 'mac_address'],
+            '_note': 'Do not modify this file manually. Both _entry_hash and _hash fields are used to verify data integrity.',
+            'logs': logs_sorted
         }
         
         with open(log_path, 'w', encoding='utf-8') as f:
@@ -304,12 +307,14 @@ def add_sn_log(sn: str, computer_id: int, week: str, status: str = 'pending',
 
 
 def update_sn_status(sn: str, status: str, log_path: str = "all_sn_logs.json",
-                    config_path: str = "sn_config.json", force: bool = False) -> bool:
+                    config_path: str = "sn_config.json", force: bool = False, 
+                    mac_address: Optional[str] = None) -> bool:
     """
     更新序列号状态（用于被动接受其他模块返回的信息）
     
-    注意：更新status字段不会影响_entry_hash（因为_entry_hash只基于sn, computer_id, week, generated_at），
-    但会更新整体文件的_hash。
+    注意：更新status字段不会影响_entry_hash，但如果更新mac_address会影响_entry_hash
+    （因为_entry_hash基于sn, computer_id, week, generated_at, mac_address），
+    会更新整体文件的_hash。
     
     Args:
         sn: 序列号
@@ -317,6 +322,7 @@ def update_sn_status(sn: str, status: str, log_path: str = "all_sn_logs.json",
         log_path: 日志文件路径
         config_path: 配置文件路径
         force: 是否强制继续（即使hash验证失败）
+        mac_address: MAC地址（可选），如果提供则更新到日志条目中
         
     Returns:
         bool: 是否更新成功
@@ -340,6 +346,13 @@ def update_sn_status(sn: str, status: str, log_path: str = "all_sn_logs.json",
         if log_entry.get('sn') == sn:
             log_entry['status'] = status
             log_entry['updated_at'] = datetime.now().isoformat()
+            
+            # 如果提供了MAC地址，更新它
+            if mac_address is not None:
+                log_entry['mac_address'] = mac_address
+                # 由于mac_address影响_entry_hash，需要重新计算
+                log_entry['_entry_hash'] = calculate_entry_hash(log_entry)
+            
             updated = True
             break
     
@@ -586,6 +599,7 @@ def main():
     parser.add_argument('--reset', action='store_true', help='重置当前周的序列号')
     parser.add_argument('--update-status', type=str, metavar='STATUS', help='更新序列号状态 (occupied/failed/pending)')
     parser.add_argument('--sn', type=str, metavar='SN', help='要更新状态的序列号（需配合--update-status使用）')
+    parser.add_argument('--mac', type=str, metavar='MAC', help='MAC地址（可选，配合--update-status使用）')
     parser.add_argument('--verify', action='store_true', help='验证日志文件的哈希值')
     parser.add_argument('--force', action='store_true', help='强制继续（即使hash验证失败，不推荐使用）')
     parser.add_argument('--config', type=str, default='sn_config.json', help='配置文件路径 (默认: sn_config.json)')
@@ -617,8 +631,9 @@ def main():
         if args.update_status not in valid_statuses:
             print(f"错误: 状态必须是以下之一: {', '.join(valid_statuses)}")
             return 1
-        if update_sn_status(args.sn, args.update_status, args.log, args.config):
-            print(f"✓ 序列号 {args.sn} 状态已更新为: {args.update_status}")
+        if update_sn_status(args.sn, args.update_status, args.log, args.config, mac_address=args.mac):
+            mac_info = f" (MAC: {args.mac})" if args.mac else ""
+            print(f"✓ 序列号 {args.sn} 状态已更新为: {args.update_status}{mac_info}")
         else:
             print(f"✗ 更新序列号状态失败（未找到序列号: {args.sn}）")
         return
