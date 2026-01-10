@@ -5621,20 +5621,21 @@ def execute_test_only(config_state):
                 # 判断测试是否成功（所有关键测试通过）
                 test_success = (passed_tests == total_tests) if total_tests > 0 else False
                 
+                # update_sn_status() 会自动获取文件操作权限，无需手动使用 file_access()
                 if test_success:
                     # 测试成功，标记为占用成功
                     if update_sn_status(sn_to_update, 'occupied', mac_address=mac_address):
                         mac_info = f" (MAC: {mac_address})" if mac_address else ""
-                        debug_print(f"\n\033[92m✓ 设备号 {sn_to_update} 已被成功占用（状态: occupied）{mac_info}\033[0m")
+                        debug_print(f"\n\033[92m✓ 序列号 {sn_to_update} 已被成功占用（状态: occupied）{mac_info}\033[0m")
                     else:
-                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
+                        print(f"\n\033[91m✗ 序列号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
                 else:
                     # 测试失败，标记为失败
                     if update_sn_status(sn_to_update, 'failed', mac_address=mac_address):
                         mac_info = f" (MAC: {mac_address})" if mac_address else ""
-                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 占用失败（状态: failed）{mac_info}\033[0m")
+                        print(f"\n\033[91m✗ 序列号 {sn_to_update} 占用失败（状态: failed）{mac_info}\033[0m")
                     else:
-                        print(f"\n\033[91m✗ 设备号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
+                        print(f"\n\033[91m✗ 序列号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
             except HashVerificationError as e:
                 print(f"\n⚠️  警告: 序列号状态更新失败（hash验证失败）: {e}")
             except Exception as e:
