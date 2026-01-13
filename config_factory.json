@@ -1,7 +1,7 @@
 {
   "mode": "factory",
   "description": "生产模式 - 用于量产，支持加密和安全启动",
-  "serial_port": "/dev/cu.wchusbserial110",
+  "serial_port": "/dev/cu.wchusbserial2110",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_3_8.bin",
   "flash_mode": "dio",
@@ -17,7 +17,7 @@
   "secure_boot": false,
   "flash_encryption_key": null,
   "flash_encryption_key_file": null,
-  "version_string": "12a",
+  "version_string": "P02V02R00",
   "print_device_logs": true,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
@@ -34,9 +34,9 @@
     "HUAWEI",
     "n/a"
   ],
-  "baud_rate": 921600,
+  "baud_rate": 2000000,
   "monitor_baud": 78400,
-  "device_code_rule": null,
+  "device_code_rule": "64YYWWXnnnnn",
   "procedures": [
     {
       "name": "factory_mode_procedure",
@@ -281,5 +281,7 @@
         }
       ]
     }
-  ]
+  ],
+  "print_esptool_logs": true,
+  "print_debug_logs": true
 }
