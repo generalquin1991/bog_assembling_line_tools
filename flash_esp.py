@@ -203,6 +203,19 @@ class SerialMonitor:
     def open(self):
         """打开串口连接（自动规范化设备路径，确保在 macOS 上使用 /dev/cu.*）"""
         try:
+            # 从全局配置中读取串口相关超时参数（如果已加载）
+            # 注意：这里不依赖具体的模式配置，只是提供可覆盖的默认值
+            global_config = {}
+            try:
+                if os.path.exists('config.json'):
+                    with open('config.json', 'r', encoding='utf-8') as f:
+                        global_config = json.load(f)
+            except Exception:
+                global_config = {}
+            serial_read_timeout_s = global_config.get('serial_read_timeout_s', 0.1)
+            serial_open_settle_ms = global_config.get('serial_open_settle_ms', None)
+            # 如果当前模式配置中有更具体的值，可以通过调用方传入，但这里先保持简单
+
             # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
             normalized_port = normalize_serial_port(self.port)
             if normalized_port != self.port:
@@ -212,13 +225,17 @@ class SerialMonitor:
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baud_rate,
-                timeout=0.1,  # 减少超时时间，提高响应速度（像 ESP-IDF monitor）
+                timeout=serial_read_timeout_s,  # 从配置读取读超时（默认0.1秒）
                 write_timeout=1
             )
             # 清空输入输出缓冲区，确保从干净状态开始
             self.serial_conn.reset_input_buffer()
             self.serial_conn.reset_output_buffer()
-            time.sleep(0.1)  # 短暂等待串口稳定（减少等待时间，像 ESP-IDF monitor）
+            # 串口稳定等待时间，可配置（默认100ms，与原来的0.1秒保持一致）
+            if serial_open_settle_ms is None:
+                time.sleep(0.1)
+            else:
+                time.sleep(max(0.0, serial_open_settle_ms / 1000.0))
             return True
         except Exception as e:
             print(f"Error: Unable to open serial port {self.port}: {e}")
@@ -305,8 +322,18 @@ class SerialMonitor:
         if not self.serial_conn or not self.serial_conn.is_open:
             return
         
+        # 从基础配置读取串口监听总超时（默认120秒，与原代码一致）
+        monitor_timeout_s = 120
+        try:
+            if os.path.exists('config.json'):
+                with open('config.json', 'r', encoding='utf-8') as f:
+                    base_config = json.load(f)
+                    monitor_timeout_s = base_config.get('serial_monitor_timeout_s', 120)
+        except Exception:
+            monitor_timeout_s = 120
+
         self.running = True
-        timeout = time.time() + 120  # 2分钟超时
+        timeout = time.time() + monitor_timeout_s  # 默认2分钟超时（可通过配置调整）
         
         while self.running and time.time() < timeout:
             try:
@@ -505,34 +532,6 @@ def filter_serial_ports(ports, config=None):
     
     return filtered_ports
 
-
-def detect_esp_device(port, baud_rate=115200):
-    """检测ESP设备是否连接（仅在必要时使用，会占用串口）"""
-    ser = None
-    try:
-        # 规范化串口设备路径（在 macOS 上自动转换 tty 到 cu）
-        normalized_port = normalize_serial_port(port)
-        ser = serial.Serial(normalized_port, baud_rate, timeout=2)
-        time.sleep(0.5)
-        
-        # 尝试发送AT命令或检测芯片
-        ser.write(b'\r\n')
-        time.sleep(0.5)
-        
-        if ser.in_waiting > 0:
-            response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
-            # 检查是否有ESP相关的响应
-            if any(keyword in response.upper() for keyword in ['ESP', 'READY', 'OK']):
-                return True
-        
-        return False
-    except Exception as e:
-        print(f"检测设备时出错: {e}")
-        return False
-    finally:
-        # 确保串口总是被关闭
-        if ser and ser.is_open:
-            ser.close()
 
 
 def save_to_csv(device_info, csv_file='device_records.csv'):
@@ -924,6 +923,9 @@ class ESPFlasher:
             hash_verification_start_time = None  # Hash校验开始时间（用于超时检测）
             hash_verification_completed = False  # Hash校验是否已完成（完成后不再显示进度条）
             hash_verification_timeout = self.config.get('hash_verification_timeout', 15)  # 从配置读取超时时间，默认15秒
+            # Load prompt refresh interval for hash verification display (convert ms to seconds)
+            prompt_refresh_interval_ms = self.config.get('prompt_refresh_interval_ms', 333)
+            prompt_refresh_interval = prompt_refresh_interval_ms / 1000.0  # Convert to seconds
             flash_interrupted = False  # 标记是否被用户中断
             progress_100_shown = False  # 标记是否已经显示过100%进度条
             
@@ -1085,10 +1087,10 @@ class ESPFlasher:
             # 后台线程：定期更新时间信息（即使进度百分比不变）
             def update_time_periodically():
                 """定期更新进度条的时间信息，让用户知道程序还在运行"""
-                nonlocal flash_interrupted, max_progress, progress_line_active, hash_verification_started, hash_verification_start_time, hash_verification_completed, hash_verification_timeout, bytes_written_known, bytes_written_is_compressed, total_bytes_compressed, total_bytes_original
+                nonlocal flash_interrupted, max_progress, progress_line_active, hash_verification_started, hash_verification_start_time, hash_verification_completed, hash_verification_timeout, bytes_written_known, bytes_written_is_compressed, total_bytes_compressed, total_bytes_original, prompt_refresh_interval
                 while not flash_interrupted:
                     try:
-                        time.sleep(1)  # 每秒更新一次
+                        time.sleep(prompt_refresh_interval)  # 使用配置的刷新间隔
                     except KeyboardInterrupt:
                         flash_interrupted = True
                         break
@@ -3155,8 +3157,16 @@ def menu_settings(config_state, mode_type):
             current_monitor_baud = config_state.get('monitor_baud', '')
             current_version = config_state.get('version_string', '')
             current_rule = config_state.get('device_code_rule', '')
+            # Load prompt_refresh_interval_ms and hash_verification_timeout from config file
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    current_prompt_refresh_interval_ms = config.get('prompt_refresh_interval_ms', 333)
+                    current_hash_verification_timeout = config.get('hash_verification_timeout', 20)
+            except Exception:
+                current_prompt_refresh_interval_ms = 333
+                current_hash_verification_timeout = 20
             # Load print_device_logs, print_esptool_logs, and print_debug_logs from config file
-            config_path = config_state.get('config_path', 'config_develop.json')
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
@@ -3196,7 +3206,9 @@ def menu_settings(config_state, mode_type):
                 ("Device Code Rule", format_current_value(current_rule, 20)),
                 ("Print Device Logs", "✓ Enabled" if current_print_logs else "✗ Disabled"),
                 ("Print ESPTool Logs", "✓ Enabled" if current_print_esptool_logs else "✗ Disabled"),
-                ("Print Debug Logs", "✓ Enabled" if current_print_debug_logs else "✗ Disabled")
+                ("Print Debug Logs", "✓ Enabled" if current_print_debug_logs else "✗ Disabled"),
+                ("Prompt Refresh Interval", f"{current_prompt_refresh_interval_ms} ms"),
+                ("Hash Verification Timeout", f"{current_hash_verification_timeout} s")
             ]
             print_config_table(preview_items, 80)
             print()
@@ -3215,6 +3227,8 @@ def menu_settings(config_state, mode_type):
                 ('  📝  Print Device Logs', 'print_device_logs'),
                 ('  🔧  Print ESPTool Logs', 'print_esptool_logs'),
                 ('  🐛  Print Debug Logs', 'print_debug_logs'),
+                ('  ⏱️  Prompt Refresh Interval', 'prompt_refresh_interval'),
+                ('  ⏳  Hash Verification Timeout', 'hash_verification_timeout'),
                 ('  🔄  Reload Default Configuration', 'reload_defaults'),
                 ('  ←  Back', 'back')
             ]
@@ -3294,6 +3308,12 @@ def menu_settings(config_state, mode_type):
                     print(f"\n✓ Toggled to: {status}")
                     time.sleep(0.5)  # Brief pause to show the message
                 continue  # Continue to show menu with updated status
+            elif setting == 'prompt_refresh_interval':
+                config_state = menu_set_prompt_refresh_interval(config_state)
+                save_config_to_file(config_state)
+            elif setting == 'hash_verification_timeout':
+                config_state = menu_set_hash_verification_timeout(config_state)
+                save_config_to_file(config_state)
                 
         except KeyboardInterrupt:
             return config_state
@@ -3646,6 +3666,178 @@ def menu_set_device_code_rule(config_state):
     # Only 64YYWWXnnnnn is allowed - force set it
     config_state['device_code_rule'] = '64YYWWXnnnnn'
     print(f"\n✓ Device code rule set: {config_state['device_code_rule']}")
+    
+    return config_state
+
+
+def menu_set_prompt_refresh_interval(config_state):
+    """Set prompt refresh interval (in milliseconds)"""
+    clear_screen()
+    print_header("Set Prompt Refresh Interval", 80)
+    
+    # Load default configuration
+    config_path = config_state.get('config_path', 'config_develop.json')
+    default_config = load_default_config(config_path)
+    default_interval_ms = default_config.get('prompt_refresh_interval_ms', 333)
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            current_interval_ms = current_config.get('prompt_refresh_interval_ms', default_interval_ms)
+    except Exception:
+        current_interval_ms = default_interval_ms
+    
+    # Display current and default values
+    print_section_header("Current Configuration", 80)
+    print()
+    print_config_table([
+        ("Current Interval", f"{current_interval_ms} ms"),
+        ("Default Interval", f"{default_interval_ms} ms")
+    ], 80)
+    print()
+    
+    print_centered("Control the refresh interval for dynamic prompts (button/model number)", 80)
+    print_centered("Lower values = more frequent updates, Higher values = less frequent updates", 80)
+    print()
+    
+    # Get user input
+    try:
+        user_input = input(f"  Enter refresh interval in milliseconds (current: {current_interval_ms}, default: {default_interval_ms}): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  ✗ User cancelled input")
+        return config_state
+    
+    # Parse input
+    if not user_input:
+        # Use current value if empty
+        new_interval_ms = current_interval_ms
+    else:
+        try:
+            new_interval_ms = int(user_input)
+            if new_interval_ms < 10 or new_interval_ms > 10000:
+                print(f"\n  ⚠️  Warning: Interval {new_interval_ms}ms is outside recommended range (10-10000ms)")
+                print("  Using value anyway...")
+        except ValueError:
+            print(f"\n  ✗ Invalid input: '{user_input}'. Must be a number.")
+            print("  Press Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return config_state
+    
+    # Save to config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    
+    config['prompt_refresh_interval_ms'] = new_interval_ms
+    
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"\n✓ Prompt refresh interval set to: {new_interval_ms} ms")
+        print(f"  Configuration saved to: {config_path}")
+        
+        # Update config_state for consistency
+        config_state['prompt_refresh_interval_ms'] = new_interval_ms
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+    
+    print("\nPress Enter to return...")
+    try:
+        input()
+    except (KeyboardInterrupt, EOFError):
+        pass
+    
+    return config_state
+
+
+def menu_set_hash_verification_timeout(config_state):
+    """Set hash verification timeout (in seconds)"""
+    clear_screen()
+    print_header("Set Hash Verification Timeout", 80)
+    
+    # Load default configuration
+    config_path = config_state.get('config_path', 'config_develop.json')
+    default_config = load_default_config(config_path)
+    default_timeout = default_config.get('hash_verification_timeout', 20)
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            current_timeout = current_config.get('hash_verification_timeout', default_timeout)
+    except Exception:
+        current_timeout = default_timeout
+    
+    # Display current and default values
+    print_section_header("Current Configuration", 80)
+    print()
+    print_config_table([
+        ("Current Timeout", f"{current_timeout} seconds"),
+        ("Default Timeout", f"{default_timeout} seconds")
+    ], 80)
+    print()
+    
+    print_centered("Control the timeout for hash verification during firmware flashing", 80)
+    print_centered("If hash verification takes longer than this timeout, it will be marked as timeout", 80)
+    print()
+    
+    # Get user input
+    try:
+        user_input = input(f"  Enter timeout in seconds (current: {current_timeout}, default: {default_timeout}): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  ✗ User cancelled input")
+        return config_state
+    
+    # Parse input
+    if not user_input:
+        # Use current value if empty
+        new_timeout = current_timeout
+    else:
+        try:
+            new_timeout = int(user_input)
+            if new_timeout < 1 or new_timeout > 300:
+                print(f"\n  ⚠️  Warning: Timeout {new_timeout}s is outside recommended range (1-300s)")
+                print("  Using value anyway...")
+        except ValueError:
+            print(f"\n  ✗ Invalid input: '{user_input}'. Must be a number.")
+            print("  Press Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
+            return config_state
+    
+    # Save to config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+    
+    config['hash_verification_timeout'] = new_timeout
+    
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print(f"\n✓ Hash verification timeout set to: {new_timeout} seconds")
+        print(f"  Configuration saved to: {config_path}")
+        
+        # Update config_state for consistency
+        config_state['hash_verification_timeout'] = new_timeout
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+    
+    print("\nPress Enter to return...")
+    try:
+        input()
+    except (KeyboardInterrupt, EOFError):
+        pass
     
     return config_state
 
@@ -4578,6 +4770,10 @@ def execute_test_only(config_state):
     PRINT_ESPTOOL_LOGS = config.get('print_esptool_logs', True)  # Default to True if not set
     PRINT_DEBUG_LOGS = config.get('print_debug_logs', True)  # Default to True if not set
     
+    # Load prompt refresh interval from config (in milliseconds, convert to seconds)
+    prompt_refresh_interval_ms = config.get('prompt_refresh_interval_ms', 333)  # Default 333ms
+    prompt_refresh_interval = prompt_refresh_interval_ms / 1000.0  # Convert to seconds
+    
     # Extract test configuration from config
     log_patterns = {}
     test_states = {}
@@ -4646,7 +4842,8 @@ def execute_test_only(config_state):
         'factory_mode_detected': False,
         'application_mode_detected': False,
         'encrypted_firmware_detected': False,
-        'factory_config_complete': False
+        'factory_config_complete': False,
+        'device_tasks_started': False
     }
     
     # Flags for tracking test progress
@@ -4661,6 +4858,8 @@ def execute_test_only(config_state):
     rtc_time_sent = False
     hw_version_sent = False
     serial_number_sent = False
+    enter_to_continue_sent = False
+    device_tasks_started = False
     button_refresh_enabled = False  # Flag to enable dynamic button prompt refresh
     last_button_refresh_time = None  # Last time button prompt was refreshed
     last_sound_time = None  # Last time sound was played during button wait
@@ -4774,7 +4973,8 @@ def execute_test_only(config_state):
             # 解析失败不会影响主流程
             pass
         
-        debug_print(f"  ✓ esptool run 完成（耗时 {run_duration:.0f}ms）")
+        # 记录并打印 run 命令从开始到结束的总耗时（用于精确分析 run → monitor 之间的时序）
+        debug_print(f"  ✓ esptool run 执行开始到结束共耗时 {run_duration:.0f}ms")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] esptool run completed in {run_duration:.0f}ms\n")
         log_file.flush()
         
@@ -4785,8 +4985,13 @@ def execute_test_only(config_state):
         log_file.flush()
         
         # Try to open serial port immediately, retry if port is still busy
-        max_retries = 5
-        retry_delay = 0.05  # 50ms between retries
+        # 从配置读取串口打开重试次数和间隔（默认5次、50ms，与原代码一致）
+        max_retries = int(config.get('serial_open_max_retries', 5))
+        retry_delay_ms = config.get('serial_open_retry_delay_ms', 50)
+        try:
+            retry_delay = float(retry_delay_ms) / 1000.0
+        except Exception:
+            retry_delay = 0.05  # 回退到原始值 50ms
         ser = None
         for retry in range(max_retries):
             try:
@@ -4816,7 +5021,10 @@ def execute_test_only(config_state):
         buffer = ""  # Main buffer for all ESP logs
         monitoring_start_time = time.time()  # Time when monitoring loop starts
         start_time = monitoring_start_time  # For timeout calculation
-        timeout = 30.0  # Maximum monitoring time (30 seconds)
+
+        # 从配置读取自检监控总超时时间（默认30秒，与原代码一致）
+        self_test_monitor_timeout_s = config.get('self_test_monitor_timeout_s', 30.0)
+        timeout = float(self_test_monitor_timeout_s)
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         last_data_time = start_time
         no_data_warning_printed = False
@@ -5354,7 +5562,41 @@ def execute_test_only(config_state):
                                 log_file.flush()
                                 break
                     
-                    # 9. Factory Configuration Complete detection
+                    # 9. Press ENTER to continue - auto send newline
+                    if not enter_to_continue_sent:
+                        enter_patterns = log_patterns.get('press_enter_to_continue', [])
+                        for pattern in enter_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Auto send newline (empty string, send_command will add \n)
+                                time.sleep(0.3)
+                                ser.write('\n'.encode('utf-8'))
+                                ser.flush()
+                                print(f"  \033[32m✓ 已发送换行符 (Press ENTER to continue)\033[0m")
+                                log_file.write(f"[AUTO INPUT] Sent newline for 'Press ENTER to continue'\n")
+                                log_file.flush()
+                                enter_to_continue_sent = True
+                                break
+                    
+                    # 10. Device tasks started detection (confirm device actually continued)
+                    if enter_to_continue_sent and not device_tasks_started:
+                        # Check for device creating tasks (e.g., "Creating BLE Send Task", "Creating Schedule Task")
+                        task_patterns = [
+                            "Creating BLE Send Task",
+                            "Creating Schedule Task",
+                            "Creating Pressure Sensor Task",
+                            "Creating.*Task",
+                            "main: Creating"
+                        ]
+                        for pattern in task_patterns:
+                            if pattern.lower() in line_clean.lower() or re.search(pattern, line_clean, re.IGNORECASE):
+                                device_tasks_started = True
+                                monitored_data['device_tasks_started'] = True
+                                print(f"  \033[32m✓ 设备已继续，开始创建任务\033[0m")
+                                log_file.write(f"[TEST STATUS] Device tasks started (detected: {line_clean})\n")
+                                log_file.flush()
+                                break
+                    
+                    # 11. Factory Configuration Complete detection
                     if not monitored_data.get('factory_config_complete'):
                         factory_complete_patterns = log_patterns.get('factory_config_complete', [])
                         for pattern in factory_complete_patterns:
@@ -5371,8 +5613,8 @@ def execute_test_only(config_state):
                 current_time = time.time()
                 elapsed = current_time - model_number_prompt_time
                 
-                # Refresh every 333ms (3 times per second)
-                if last_model_number_refresh_time is None or (current_time - last_model_number_refresh_time) >= 0.333:
+                # Refresh at configured interval
+                if last_model_number_refresh_time is None or (current_time - last_model_number_refresh_time) >= prompt_refresh_interval:
                     # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
                     print(f"\r  \033[K\033[33m📝 请输入设备号\033[0m (等待时间: {elapsed:.1f}s) [按ESC退出]", end='', flush=True)
                     last_model_number_refresh_time = current_time
@@ -5483,8 +5725,8 @@ def execute_test_only(config_state):
                 
                 # Only refresh prompt if no key was detected
                 if not key_detected:
-                    # Refresh every 333ms (3 times per second)
-                    if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= 0.333:
+                    # Refresh at configured interval
+                    if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= prompt_refresh_interval:
                         # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
                         print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC跳过/空格标记板卡错误]", end='', flush=True)
                         last_button_refresh_time = current_time
@@ -5511,6 +5753,9 @@ def execute_test_only(config_state):
                 critical_tests_done = False
             # 必须检测到工厂配置完成日志，才认为自检关键步骤完成
             if not monitored_data.get('factory_config_complete'):
+                critical_tests_done = False
+            # 如果发送了换行符，必须等待设备开始创建任务才认为真正完成
+            if enter_to_continue_sent and not device_tasks_started:
                 critical_tests_done = False
             # Don't block on button test - it will wait indefinitely until button is pressed or user exits
             # Only check if button test was already completed

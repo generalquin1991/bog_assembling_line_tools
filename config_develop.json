@@ -18,7 +18,7 @@
   "version_string": "P02V02R00",
   "mode_number": "20065",
   "batch": "SN: YYMMDD+序号",
-  "print_device_logs": false,
+  "print_device_logs": true,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
   "serial_port_keywords": [
@@ -36,6 +36,15 @@
   ],
   "baud_rate": 2000000,
   "monitor_baud": 78400,
+  "prompt_refresh_interval_ms": 100,
+  "serial_read_timeout_s": 0.1,
+  "serial_open_settle_ms": 100,
+  "serial_monitor_timeout_s": 120,
+  "detect_esp_timeout_s": 2,
+  "detect_esp_wait_after_open_ms": 10,
+  "serial_open_max_retries": 5,
+  "serial_open_retry_delay_ms": 50,
+  "self_test_monitor_timeout_s": 30,
   "procedures": [
     {
       "name": "development_mode_procedure",
@@ -375,6 +384,6 @@
     }
   ],
   "device_code_rule": "64YYWWXnnnnn",
-  "print_esptool_logs": false,
-  "print_debug_logs": false
+  "print_esptool_logs": true,
+  "print_debug_logs": true
 }
