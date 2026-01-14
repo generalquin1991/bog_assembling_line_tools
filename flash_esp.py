@@ -79,6 +79,28 @@ def debug_print(*args, **kwargs):
         print(prefix, **kwargs)
 
 
+def must_print(message, log_file=None, end="\n"):
+    """
+    打印必须显示的关键信息（不受 DEBUG 开关影响），并可选写入当前日志文件。
+    
+    - 始终打印到终端（stdout）
+    - 如提供 log_file，则同时写入日志文件（带时间戳）
+    """
+    # 控制台输出
+    print(message, end=end, flush=True)
+    
+    # 日志文件输出（如果有）
+    if log_file is not None:
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            # 不重复换行：控制台已经根据 end 控制，这里统一补一个换行
+            log_file.write(f"[{timestamp}] {message}\n")
+            log_file.flush()
+        except Exception:
+            # 日志写入失败不应影响主流程
+            pass
+
+
 def ts_print(*args, **kwargs):
     """
     带时间戳的打印工具，仅用于"来自设备的日志行"。
@@ -1113,7 +1135,7 @@ class ESPFlasher:
                                     # 超时了，显示错误
                                     if progress_line_active:
                                         print("\r" + " " * 100 + "\r", end="", flush=True)
-                                        print(f"  ✗ Hash校验超时（>{hash_verification_timeout}秒）", end="", flush=True)
+                                        must_print(f"  ✗ Hash校验超时（>{hash_verification_timeout}秒）", end="")
                                 else:
                                     # 还在等待中，显示等待提示（格式：已等待时间/超时时间）
                                     if progress_line_active:
@@ -1277,9 +1299,10 @@ class ESPFlasher:
                         with progress_update_lock:
                             # 更新等待提示为完成信息，保留在log中
                             if progress_line_active and hash_verification_started:
-                                # print("\r" + " " * 100 + "\r", end="", flush=True)  # 清除当前行
-                                print("\n")
-                                print(f"  ✓ Hash校验完成", flush=True)  # 显示完成信息并换行，保留在log中
+                                # 清除当前行的“等待Hash校验”提示
+                                print("\r" + " " * 100 + "\r", end="", flush=True)
+                                # 在同一位置打印绿色的完成提示
+                                must_print("  \033[92m✓ Hash校验完成\033[0m")
                                 progress_line_active = False
                         hash_verification_started = False  # Hash校验完成
                         hash_verification_start_time = None  # 清除开始时间
@@ -1478,7 +1501,7 @@ class ESPFlasher:
             return_code = process.poll()
             
             if return_code == 0:
-                print("\n\n✓ Firmware flashing successful!")
+                must_print("\n\n\033[92m✓ Firmware flashing successful!\033[0m", unified_log_file)
                 if unified_log_file:
                     debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 
@@ -1524,7 +1547,7 @@ class ESPFlasher:
                     mode = self.config.get('mode', 'unknown')
                     if mode == 'develop':
                         # 在开发模式下，如果检测到加密固件，给出警告
-                        print(f"\n\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m")
+                        must_print(f"\n\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m", unified_log_file)
                         print(f"  \033[33m⚠️  该设备已处于安全下载模式，无法在开发模式下烧录未加密固件\033[0m")
                         print(f"  \033[33m⚠️  请使用 Factory Mode 进行烧录，或先擦除 Flash 后重新烧录未加密固件\033[0m")
                         if unified_log_file:
@@ -1536,7 +1559,7 @@ class ESPFlasher:
                                               self.session_id)
                         return False
                 
-                print("\n\n✗ Firmware flashing failed!")
+                must_print("\n\n✗ Firmware flashing failed!", unified_log_file)
                 if unified_log_file:
                     debug_print(f"📝 All logs saved to: {self.unified_log_filepath}")
                 save_operation_history("Flash Failed", 
@@ -1594,7 +1617,7 @@ class ESPFlasher:
             save_operation_history("Flash Interrupted", "User pressed Ctrl+C", self.session_id)
             return False
         except Exception as e:
-            print(f"\n✗ Firmware flashing failed: {e}")
+            must_print(f"\n✗ Firmware flashing failed: {e}", unified_log_file)
             import traceback
             traceback.print_exc()
             unified_log_file = getattr(self, 'unified_log_file', None)
@@ -1734,7 +1757,7 @@ class ESPFlasher:
                                   self.session_id)
             
             if not self._execute_steps(procedure.get('steps', [])):
-                print(f"\n✗ Procedure execution failed: {procedure_name}")
+                must_print(f"\n✗ Procedure execution failed: {procedure_name}")
                 save_operation_history(f"Procedure Failed: {procedure_name}", 
                                       "Execution failed", 
                                       self.session_id)
@@ -1745,7 +1768,7 @@ class ESPFlasher:
                                   self.session_id)
         
         print("\n" + "=" * 80)
-        print("✓ All procedures completed")
+        must_print("\033[92m✓ All procedures completed\033[0m")
         print("=" * 80)
         save_operation_history("All Procedures Completed", 
                               "All procedures executed successfully", 
@@ -1842,7 +1865,7 @@ class ESPFlasher:
         
         while time.time() - start_time < timeout:
             if os.path.exists(port):
-                print(f"  ✓ 串口存在: {port}")
+                print(f"  \033[92m✓ 串口存在: {port}\033[0m")
                 save_operation_history(f"Step: {step_name} - Result", 
                                       f"UART port exists: {port}", 
                                       session_id)
@@ -3150,6 +3173,9 @@ def menu_settings(config_state, mode_type):
             clear_screen()
             print_header("Settings", 80)
             
+            # Determine current config file path for this mode
+            config_path = config_state.get('config_path', 'config_develop.json')
+            
             # Get current configuration values
             current_port = config_state.get('port', '')
             current_baud = config_state.get('baud_rate', '')
@@ -3166,17 +3192,30 @@ def menu_settings(config_state, mode_type):
             except Exception:
                 current_prompt_refresh_interval_ms = 333
                 current_hash_verification_timeout = 20
-            # Load print_device_logs, print_esptool_logs, and print_debug_logs from config file
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    current_print_logs = config.get('print_device_logs', True)
-                    current_print_esptool_logs = config.get('print_esptool_logs', True)
-                    current_print_debug_logs = config.get('print_debug_logs', True)
-            except Exception:
-                current_print_logs = True
-                current_print_esptool_logs = True
-                current_print_debug_logs = True
+            # Load print_device_logs, print_esptool_logs, and print_debug_logs
+            # Priority: config_state (most up-to-date) > config file > default True
+            current_print_logs = config_state.get('print_device_logs')
+            current_print_esptool_logs = config_state.get('print_esptool_logs')
+            current_print_debug_logs = config_state.get('print_debug_logs')
+            
+            # If not in config_state, read from config file
+            if current_print_logs is None or current_print_esptool_logs is None or current_print_debug_logs is None:
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        if current_print_logs is None:
+                            current_print_logs = config.get('print_device_logs', True)
+                        if current_print_esptool_logs is None:
+                            current_print_esptool_logs = config.get('print_esptool_logs', True)
+                        if current_print_debug_logs is None:
+                            current_print_debug_logs = config.get('print_debug_logs', True)
+                except Exception:
+                    if current_print_logs is None:
+                        current_print_logs = True
+                    if current_print_esptool_logs is None:
+                        current_print_esptool_logs = True
+                    if current_print_debug_logs is None:
+                        current_print_debug_logs = True
             
             # Format firmware display (show filename only)
             firmware_display = 'Not set'
@@ -3217,6 +3256,7 @@ def menu_settings(config_state, mode_type):
             print_centered("Please select item to configure", 80)
             print()
             
+            # Build menu choices (clean labels; only booleans / numeric settings show compact status)
             settings_choices = [
                 ('  📡  Serial Port', 'ports'),
                 ('  ⚡  Flash Baud Rate', 'flash_baud'),
@@ -3224,11 +3264,11 @@ def menu_settings(config_state, mode_type):
                 ('  📊  Monitor Baud Rate', 'monitor_baud'),
                 ('  🏷️  Version String', 'version_string'),
                 ('  🔢  Device Code Rule', 'device_code_rule'),
-                ('  📝  Print Device Logs', 'print_device_logs'),
-                ('  🔧  Print ESPTool Logs', 'print_esptool_logs'),
-                ('  🐛  Print Debug Logs', 'print_debug_logs'),
-                ('  ⏱️  Prompt Refresh Interval', 'prompt_refresh_interval'),
-                ('  ⏳  Hash Verification Timeout', 'hash_verification_timeout'),
+                (f'  📝  Print Device Logs [{"✓" if current_print_logs else "✗"}]', 'print_device_logs'),
+                (f'  🔧  Print ESPTool Logs [{"✓" if current_print_esptool_logs else "✗"}]', 'print_esptool_logs'),
+                (f'  🐛  Print Debug Logs [{"✓" if current_print_debug_logs else "✗"}]', 'print_debug_logs'),
+                (f'  ⏱️  Prompt Refresh Interval [{current_prompt_refresh_interval_ms} ms]', 'prompt_refresh_interval'),
+                (f'  ⏳  Hash Verification Timeout [{current_hash_verification_timeout} s]', 'hash_verification_timeout'),
                 ('  🔄  Reload Default Configuration', 'reload_defaults'),
                 ('  ←  Back', 'back')
             ]
@@ -4352,11 +4392,11 @@ def basic_check_uart(flasher, config_state):
         # 如果找不到 procedure，尝试直接检查串口
         port = config_state.get('port') or config.get('serial_port')
         if not port:
-            print("✗ Error: Serial port not configured")
+            must_print("✗ Error: Serial port not configured")
             return False
         
         if not check_port_exists(port):
-            print(f"✗ Error: Serial port {port} does not exist")
+            must_print(f"✗ Error: Serial port {port} does not exist")
             return False
         
         print(f"✓ Serial port exists: {port}")
@@ -4369,11 +4409,11 @@ def basic_check_uart(flasher, config_state):
         # 如果找不到步骤，使用简单检查
         port = config_state.get('port') or config.get('serial_port')
         if not port:
-            print("✗ Error: Serial port not configured")
+            must_print("✗ Error: Serial port not configured")
             return False
         
         if not check_port_exists(port):
-            print(f"✗ Error: Serial port {port} does not exist")
+            must_print(f"✗ Error: Serial port {port} does not exist")
             return False
         
         print(f"✓ Serial port exists: {port}")
@@ -4608,7 +4648,7 @@ def execute_program_and_test(config_state):
             _handle_operation_error("Test failed")
             return False
         
-        print("\n✓ Program + Test completed successfully")
+        print("\n\033[92m✓ Program + Test completed successfully\033[0m")
         _wait_for_user_return()
         return True
         
@@ -4732,7 +4772,7 @@ def execute_test_only(config_state):
     bootloader_baud = 115200  # bootloader 波特率固定为 115200
     
     if not port:
-        print("\n✗ Error: Serial port not configured")
+        must_print("\n✗ Error: Serial port not configured")
         print("\nPress Enter to return...")
         try:
             input()
@@ -4742,7 +4782,7 @@ def execute_test_only(config_state):
     
     # Check serial port first
     if not check_port_exists(port):
-        print(f"\n✗ Error: Serial port {port} does not exist")
+        must_print(f"\n✗ Error: Serial port {port} does not exist")
         print("\nPress Enter to return...")
         try:
             input()
@@ -4756,7 +4796,7 @@ def execute_test_only(config_state):
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
     except Exception as e:
-        print(f"\n✗ Error loading config: {e}")
+        must_print(f"\n✗ Error loading config: {e}")
         print("\nPress Enter to return...")
         try:
             input()
@@ -4928,7 +4968,7 @@ def execute_test_only(config_state):
             mode_type = config_state.get('mode', 'develop')
             if mode_type == 'develop':
                 # 在开发模式下，如果检测到加密固件，给出警告
-                print(f"\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m")
+                must_print(f"\n  \033[33m⚠️  检测到设备已烧录加密固件（Secure Download Mode）\033[0m", log_file)
                 print(f"  \033[33m⚠️  该设备已处于安全下载模式，无法使用 esptool run 命令\033[0m")
                 print(f"  \033[33m⚠️  请使用 Factory Mode 进行测试，或重新烧录未加密的固件\033[0m")
                 log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] SECURE_DOWNLOAD_MODE_DETECTED: Device has encrypted firmware\n")
@@ -6318,7 +6358,7 @@ def menu_start_flash(config_state):
     print(f"Checking serial port: {config_state['port']}")
     
     if not check_port_exists(config_state['port']):
-        print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
+        must_print(f"\n✗ Error: Serial port {config_state['port']} does not exist")
         
         # List available serial ports for user reference
         print("\nAvailable serial port devices:")

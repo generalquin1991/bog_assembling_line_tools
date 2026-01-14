@@ -36,7 +36,7 @@
   ],
   "baud_rate": 2000000,
   "monitor_baud": 78400,
-  "prompt_refresh_interval_ms": 100,
+  "prompt_refresh_interval_ms": 50,
   "serial_read_timeout_s": 0.1,
   "serial_open_settle_ms": 100,
   "serial_monitor_timeout_s": 120,
