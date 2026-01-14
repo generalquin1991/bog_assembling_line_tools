@@ -18,7 +18,7 @@
   "version_string": "P02V02R00",
   "mode_number": "20065",
   "batch": "SN: YYMMDD+序号",
-  "print_device_logs": true,
+  "print_device_logs": false,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
   "serial_port_keywords": [
@@ -375,6 +375,6 @@
     }
   ],
   "device_code_rule": "64YYWWXnnnnn",
-  "print_esptool_logs": true,
-  "print_debug_logs": true
+  "print_esptool_logs": false,
+  "print_debug_logs": false
 }

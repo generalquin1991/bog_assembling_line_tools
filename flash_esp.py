@@ -3089,6 +3089,47 @@ def reload_default_config(config_state):
     return config_state
 
 
+def toggle_print_setting(config_state, setting_key, global_var_name):
+    """Toggle a print setting (device_logs, esptool_logs, or debug_logs)"""
+    config_path = config_state.get('config_path', 'config_develop.json')
+    
+    # Load current value from config file
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            current_value = config.get(setting_key, True)
+    except Exception:
+        current_value = True
+    
+    # Toggle the value
+    new_value = not current_value
+    
+    # Save to config file
+    try:
+        config[setting_key] = new_value
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        
+        # Update global variable
+        if global_var_name == 'PRINT_DEVICE_LOGS':
+            global PRINT_DEVICE_LOGS
+            PRINT_DEVICE_LOGS = new_value
+        elif global_var_name == 'PRINT_ESPTOOL_LOGS':
+            global PRINT_ESPTOOL_LOGS
+            PRINT_ESPTOOL_LOGS = new_value
+        elif global_var_name == 'PRINT_DEBUG_LOGS':
+            global PRINT_DEBUG_LOGS
+            PRINT_DEBUG_LOGS = new_value
+        
+        # Update config_state for consistency
+        config_state[setting_key] = new_value
+        
+        return True, new_value
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+        return False, current_value
+
+
 def menu_settings(config_state, mode_type):
     """Settings menu"""
     last_selected = None  # Remember last selected setting item
@@ -3230,14 +3271,29 @@ def menu_settings(config_state, mode_type):
                 config_state = menu_set_device_code_rule(config_state)
                 save_config_to_file(config_state)
             elif setting == 'print_device_logs':
-                config_state = menu_set_print_device_logs(config_state)
-                save_config_to_file(config_state)
+                # Direct toggle without submenu
+                success, new_value = toggle_print_setting(config_state, 'print_device_logs', 'PRINT_DEVICE_LOGS')
+                if success:
+                    status = "✓ Enabled" if new_value else "✗ Disabled"
+                    print(f"\n✓ Toggled to: {status}")
+                    time.sleep(0.5)  # Brief pause to show the message
+                continue  # Continue to show menu with updated status
             elif setting == 'print_esptool_logs':
-                config_state = menu_set_print_esptool_logs(config_state)
-                save_config_to_file(config_state)
+                # Direct toggle without submenu
+                success, new_value = toggle_print_setting(config_state, 'print_esptool_logs', 'PRINT_ESPTOOL_LOGS')
+                if success:
+                    status = "✓ Enabled" if new_value else "✗ Disabled"
+                    print(f"\n✓ Toggled to: {status}")
+                    time.sleep(0.5)  # Brief pause to show the message
+                continue  # Continue to show menu with updated status
             elif setting == 'print_debug_logs':
-                config_state = menu_set_print_debug_logs(config_state)
-                save_config_to_file(config_state)
+                # Direct toggle without submenu
+                success, new_value = toggle_print_setting(config_state, 'print_debug_logs', 'PRINT_DEBUG_LOGS')
+                if success:
+                    status = "✓ Enabled" if new_value else "✗ Disabled"
+                    print(f"\n✓ Toggled to: {status}")
+                    time.sleep(0.5)  # Brief pause to show the message
+                continue  # Continue to show menu with updated status
                 
         except KeyboardInterrupt:
             return config_state
@@ -3625,15 +3681,20 @@ def menu_set_print_esptool_logs(config_state):
     print_centered("(Logs are always saved to log files)", 80)
     print()
     
-    enable_question = [
-        inquirer.Confirm('enable',
-                        message="Enable print esptool logs?",
-                        default=current_print_esptool_logs)
-    ]
+    # Show current status and prompt to toggle
+    status_text = "✓ Enabled" if current_print_esptool_logs else "✗ Disabled"
+    new_status_text = "✗ Disabled" if current_print_esptool_logs else "✓ Enabled"
+    print_centered(f"Current: {status_text}", 80)
+    print_centered(f"Press Enter to toggle to: {new_status_text}", 80)
+    print()
     
-    answer = inquirer.prompt(enable_question)
-    if not answer:
+    try:
+        input("Press Enter to toggle (or Ctrl+C to cancel): ")
+    except (KeyboardInterrupt, EOFError):
         return config_state
+    
+    # Toggle the value
+    new_value = not current_print_esptool_logs
     
     # Save to config file
     try:
@@ -3642,20 +3703,20 @@ def menu_set_print_esptool_logs(config_state):
     except Exception:
         config = {}
     
-    config['print_esptool_logs'] = answer['enable']
+    config['print_esptool_logs'] = new_value
     
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-        print(f"\n✓ Print esptool logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"\n✓ Print esptool logs set to: {'Enabled' if new_value else 'Disabled'}")
         print(f"  Configuration saved to: {config_path}")
         
         # Update global variable
         global PRINT_ESPTOOL_LOGS
-        PRINT_ESPTOOL_LOGS = answer['enable']
+        PRINT_ESPTOOL_LOGS = new_value
         
         # Update config_state for consistency
-        config_state['print_esptool_logs'] = answer['enable']
+        config_state['print_esptool_logs'] = new_value
     except Exception as e:
         print(f"\n✗ Failed to save configuration: {e}")
     
@@ -3693,15 +3754,20 @@ def menu_set_print_debug_logs(config_state):
     print_centered("(Debug logs include program execution status messages)", 80)
     print()
     
-    enable_question = [
-        inquirer.Confirm('enable',
-                        message="Enable print debug logs?",
-                        default=current_print_debug_logs)
-    ]
+    # Show current status and prompt to toggle
+    status_text = "✓ Enabled" if current_print_debug_logs else "✗ Disabled"
+    new_status_text = "✗ Disabled" if current_print_debug_logs else "✓ Enabled"
+    print_centered(f"Current: {status_text}", 80)
+    print_centered(f"Press Enter to toggle to: {new_status_text}", 80)
+    print()
     
-    answer = inquirer.prompt(enable_question)
-    if not answer:
+    try:
+        input("Press Enter to toggle (or Ctrl+C to cancel): ")
+    except (KeyboardInterrupt, EOFError):
         return config_state
+    
+    # Toggle the value
+    new_value = not current_print_debug_logs
     
     # Save to config file
     try:
@@ -3710,20 +3776,20 @@ def menu_set_print_debug_logs(config_state):
     except Exception:
         config = {}
     
-    config['print_debug_logs'] = answer['enable']
+    config['print_debug_logs'] = new_value
     
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-        print(f"\n✓ Print debug logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"\n✓ Print debug logs set to: {'Enabled' if new_value else 'Disabled'}")
         print(f"  Configuration saved to: {config_path}")
         
         # Update global variable
         global PRINT_DEBUG_LOGS
-        PRINT_DEBUG_LOGS = answer['enable']
+        PRINT_DEBUG_LOGS = new_value
         
         # Update config_state for consistency
-        config_state['print_debug_logs'] = answer['enable']
+        config_state['print_debug_logs'] = new_value
     except Exception as e:
         print(f"\n✗ Failed to save configuration: {e}")
     
@@ -3761,15 +3827,20 @@ def menu_set_print_device_logs(config_state):
     print_centered("(Logs are always saved to log files)", 80)
     print()
     
-    enable_question = [
-        inquirer.Confirm('enable',
-                        message="Enable print device logs?",
-                        default=current_print_logs)
-    ]
+    # Show current status and prompt to toggle
+    status_text = "✓ Enabled" if current_print_logs else "✗ Disabled"
+    new_status_text = "✗ Disabled" if current_print_logs else "✓ Enabled"
+    print_centered(f"Current: {status_text}", 80)
+    print_centered(f"Press Enter to toggle to: {new_status_text}", 80)
+    print()
     
-    answer = inquirer.prompt(enable_question)
-    if not answer:
+    try:
+        input("Press Enter to toggle (or Ctrl+C to cancel): ")
+    except (KeyboardInterrupt, EOFError):
         return config_state
+    
+    # Toggle the value
+    new_value = not current_print_logs
     
     # Save to config file
     try:
@@ -3778,20 +3849,20 @@ def menu_set_print_device_logs(config_state):
     except Exception:
         config = {}
     
-    config['print_device_logs'] = answer['enable']
+    config['print_device_logs'] = new_value
     
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
-        print(f"\n✓ Print device logs set to: {'Enabled' if answer['enable'] else 'Disabled'}")
+        print(f"\n✓ Print device logs set to: {'Enabled' if new_value else 'Disabled'}")
         print(f"  Configuration saved to: {config_path}")
         
         # Update global variable
         global PRINT_DEVICE_LOGS
-        PRINT_DEVICE_LOGS = answer['enable']
+        PRINT_DEVICE_LOGS = new_value
         
         # Update config_state for consistency
-        config_state['print_device_logs'] = answer['enable']
+        config_state['print_device_logs'] = new_value
     except Exception as e:
         print(f"\n✗ Failed to save configuration: {e}")
     
