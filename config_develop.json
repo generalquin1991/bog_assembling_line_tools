@@ -1,9 +1,9 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.wchusbserial2110",
+  "serial_port": "/dev/cu.wchusbserial210",
   "chip_type": "esp32c2",
-  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_8.bin",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_12.bin",
   "flash_mode": "dio",
   "flash_freq": "60m",
   "flash_size": "2MB",
@@ -18,7 +18,7 @@
   "version_string": "P02V02R00",
   "mode_number": "20065",
   "batch": "SN: YYMMDD+序号",
-  "print_device_logs": false,
+  "print_device_logs": true,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
   "serial_port_keywords": [
@@ -94,6 +94,11 @@
                   "Time passed",
                   "RTC Time now:"
                 ],
+                "rtc_time_set_success": [
+                  "RTC time set to:",
+                  "RTC time set to",
+                  "rtc time set to"
+                ],
                 "pressure_sensor_pass": [
                   "Pressure Sensor Calibration Value Ok",
                   "Pressure Sensor Reading:"
@@ -103,6 +108,23 @@
                   "button to continue",
                   "Press button if",
                   "Press button"
+                ],
+                "button_clicked": [
+                  "Button clicked",
+                  "button clicked",
+                  "Button Clicked"
+                ],
+                "rtc_time_prompt": [
+                  "Enter current date and time",
+                  "Enter current date and time (YYYY-MM-DDTHH:MM:SS):",
+                  "Enter date and time",
+                  "date and time"
+                ],
+                "press_enter_to_continue": [
+                  "Press ENTER to continue",
+                  "Press ENTER to continue...",
+                  "Press Enter to continue",
+                  "Press Enter to continue..."
                 ],
                 "hardware_version_prompt": [
                   "Enter Hardware Version:",
@@ -235,6 +257,58 @@
               "on_failure": "warning"
             },
             {
+              "name": "wait_for_rtc_time_prompt",
+              "type": "wait_for_prompt",
+              "description": "等待日期时间输入提示",
+              "prompt_pattern": "Enter current date and time",
+              "timeout": 5,
+              "skip_if_detected": false,
+              "on_failure": "warning"
+            },
+            {
+              "name": "input_rtc_time",
+              "type": "interactive_input",
+              "description": "输入当前日期时间（格式：YYYY-MM-DDTHH:MM:SS），自动使用系统时间",
+              "prompt": "请输入当前日期时间（格式：YYYY-MM-DDTHH:MM:SS，留空则使用当前系统时间）:",
+              "fallback_to_config": false,
+              "auto_generate": true,
+              "auto_generate_type": "current_time",
+              "send_to_device": true,
+              "on_failure": "error"
+            },
+            {
+              "name": "wait_for_rtc_time_set_success",
+              "type": "wait_for_prompt",
+              "description": "等待RTC时间写入成功确认（检测到 RTC time set to 表示写入成功）",
+              "prompt_pattern": "RTC time set to:",
+              "timeout": 5,
+              "skip_if_detected": false,
+              "on_failure": "warning"
+            },
+            {
+              "name": "wait_for_model_number_prompt",
+              "type": "wait_for_prompt",
+              "description": "等待型号输入提示（如果上一步已检测到，将自动跳过）",
+              "prompt_pattern": "Enter Model Number:",
+              "timeout": 5,
+              "skip_if_detected": true,
+              "on_failure": "warning"
+            },
+            {
+              "name": "input_model_number",
+              "type": "interactive_input",
+              "description": "如果需要输入型号，则自动输入（从配置文件读取）",
+              "prompt": "请输入型号（留空则使用配置文件中的mode_number）:",
+              "fallback_to_config": true,
+              "config_key": "mode_number",
+              "config_files": [
+                "config_develop.json",
+                "config.json"
+              ],
+              "send_to_device": true,
+              "on_failure": "error"
+            },
+            {
               "name": "wait_for_hardware_version_prompt",
               "type": "wait_for_prompt",
               "description": "等待硬件版本输入提示（如果上一步已检测到，将自动跳过）",
@@ -274,6 +348,25 @@
               "fallback_to_config": false,
               "send_to_device": true,
               "on_failure": "warning"
+            },
+            {
+              "name": "wait_for_enter_to_continue",
+              "type": "wait_for_prompt",
+              "description": "等待 Press ENTER to continue 提示",
+              "prompt_pattern": "Press ENTER to continue",
+              "timeout": 5,
+              "skip_if_detected": false,
+              "on_failure": "warning"
+            },
+            {
+              "name": "send_enter_to_continue",
+              "type": "interactive_input",
+              "description": "自动发送换行符继续",
+              "prompt": "",
+              "auto_send": true,
+              "send_value": "",
+              "send_to_device": true,
+              "on_failure": "warning"
             }
           ],
           "on_failure": "warning"
@@ -282,6 +375,6 @@
     }
   ],
   "device_code_rule": "64YYWWXnnnnn",
-  "print_esptool_logs": false,
-  "print_debug_logs": false
+  "print_esptool_logs": true,
+  "print_debug_logs": true
 }

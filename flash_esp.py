@@ -2506,74 +2506,104 @@ class ESPFlasher:
         step_name = step.get('name', 'interactive_input')
         session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
-        # 先从配置文件获取默认值
-        default_value = None
-        if fallback_to_config and config_key:
-            for config_file in config_files:
-                if os.path.exists(config_file):
-                    try:
-                        with open(config_file, 'r', encoding='utf-8') as f:
-                            config_data = json.load(f)
-                            if config_key in config_data:
-                                default_value = str(config_data[config_key]).strip()
-                                break
-                    except Exception as e:
-                        continue
+        # 检查是否自动发送（不等待用户输入）
+        auto_send = step.get('auto_send', False)
+        send_value = step.get('send_value', '')
         
-        # 构建提示信息，显示默认值
-        if default_value:
-            prompt_with_default = f"{prompt} [默认: {default_value}]"
-        else:
-            prompt_with_default = prompt
-        
-        print(f"  交互式输入: {prompt}")
-        
-        save_operation_history(f"Step: {step_name}", 
-                              f"Interactive input prompt: {prompt}, Default: {default_value if default_value else 'None'}", 
-                              session_id)
-        
-        # 获取用户输入
-        try:
-            user_input = input(f"  {prompt_with_default}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("  ✗ 用户取消输入")
-            save_operation_history(f"Step: {step_name} - Result", 
-                                  f"User cancelled input", 
+        if auto_send:
+            # 自动发送模式：直接使用 send_value，不等待用户输入
+            user_input = send_value
+            print(f"  自动发送: {step.get('description', '自动发送数据到设备')}")
+            save_operation_history(f"Step: {step_name}", 
+                                  f"Auto-send mode: {repr(send_value)}", 
                                   session_id)
-            return False
-        
-        # 如果用户输入为空，使用默认值
-        if not user_input:
+        else:
+            # 正常交互模式
+            # 先从配置文件获取默认值
+            default_value = None
+            if fallback_to_config and config_key:
+                for config_file in config_files:
+                    if os.path.exists(config_file):
+                        try:
+                            with open(config_file, 'r', encoding='utf-8') as f:
+                                config_data = json.load(f)
+                                if config_key in config_data:
+                                    default_value = str(config_data[config_key]).strip()
+                                    break
+                        except Exception as e:
+                            continue
+            
+            # 检查是否自动生成值
+            auto_generate = step.get('auto_generate', False)
+            auto_generate_type = step.get('auto_generate_type', '')
+            
+            if auto_generate and auto_generate_type == 'current_time':
+                # 自动生成当前时间（格式：YYYY-MM-DDTHH:MM:SS）
+                current_time = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+                default_value = current_time
+                print(f"  自动生成当前时间: {current_time}")
+            
+            # 构建提示信息，显示默认值
             if default_value:
-                user_input = default_value
-                print(f"  ✓ 使用默认值: {default_value}")
-                save_operation_history(f"Step: {step_name} - Input", 
-                                      f"Using default value: {default_value}", 
-                                      session_id)
-            elif fallback_to_config:
-                print("  ⚠️  未在配置文件中找到默认值，且用户输入为空")
-                save_operation_history(f"Step: {step_name} - Result", 
-                                      f"Error: No default value found and user input is empty", 
-                                      session_id)
-                return False
+                prompt_with_default = f"{prompt} [默认: {default_value}]"
             else:
-                print("  ✗ 输入为空")
+                prompt_with_default = prompt
+            
+            print(f"  交互式输入: {prompt}")
+            
+            save_operation_history(f"Step: {step_name}", 
+                                  f"Interactive input prompt: {prompt}, Default: {default_value if default_value else 'None'}", 
+                                  session_id)
+            
+            # 获取用户输入
+            try:
+                user_input = input(f"  {prompt_with_default}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("  ✗ 用户取消输入")
                 save_operation_history(f"Step: {step_name} - Result", 
-                                      f"Error: Input is empty", 
+                                      f"User cancelled input", 
                                       session_id)
                 return False
+            
+            # 如果用户输入为空，使用默认值
+            if not user_input:
+                if default_value:
+                    user_input = default_value
+                    print(f"  ✓ 使用默认值: {default_value}")
+                    save_operation_history(f"Step: {step_name} - Input", 
+                                          f"Using default value: {default_value}", 
+                                          session_id)
+                elif fallback_to_config:
+                    print("  ⚠️  未在配置文件中找到默认值，且用户输入为空")
+                    save_operation_history(f"Step: {step_name} - Result", 
+                                          f"Error: No default value found and user input is empty", 
+                                          session_id)
+                    return False
+                else:
+                    print("  ✗ 输入为空")
+                    save_operation_history(f"Step: {step_name} - Result", 
+                                          f"Error: Input is empty", 
+                                          session_id)
+                    return False
         
         # 确保输入值被正确清理（去除所有空白字符，包括换行符）
-        user_input = user_input.strip()
+        # 注意：对于 auto_send 模式，如果 send_value 是空字符串，这是允许的（用于发送换行符）
+        if not auto_send:
+            user_input = user_input.strip()
+            if not user_input:
+                print("  ✗ 输入为空")
+                save_operation_history(f"Step: {step_name} - Result", 
+                                      f"Error: Input is empty after strip", 
+                                      session_id)
+                return False
+        else:
+            # auto_send 模式下，允许空字符串（用于发送换行符）
+            user_input = user_input.strip() if user_input else ''
         
-        if not user_input:
-            print("  ✗ 输入为空")
-            save_operation_history(f"Step: {step_name} - Result", 
-                                  f"Error: Input is empty after strip", 
-                                  session_id)
-            return False
-        
-        print(f"  ✓ 输入值: {user_input}")
+        if auto_send:
+            print(f"  ✓ 自动发送值: {repr(user_input) if user_input else '(空字符串，将发送换行符)'}")
+        else:
+            print(f"  ✓ 输入值: {user_input}")
         
         # 如果需要发送到设备
         if send_to_device:
@@ -4557,6 +4587,7 @@ def execute_test_only(config_state):
     button_detected = False
     button_test_done = False
     button_prompt_time = None
+    rtc_time_sent = False
     hw_version_sent = False
     serial_number_sent = False
     button_refresh_enabled = False  # Flag to enable dynamic button prompt refresh
@@ -4861,24 +4892,46 @@ def execute_test_only(config_state):
                     
                     # 3. RTC test
                     if not rtc_extracted:
-                        rtc_patterns = log_patterns.get('rtc_pass', [])
-                        for pattern in rtc_patterns:
+                        # 首先检查新的 RTC 写入成功格式（"RTC time set to: 14.01.26 10:00:00, weekday: 4"）
+                        rtc_set_patterns = log_patterns.get('rtc_time_set_success', [])
+                        for pattern in rtc_set_patterns:
                             if pattern.lower() in line_clean.lower():
                                 monitored_data['rtc_time'] = line_clean
                                 
-                                # 尝试从日志中解析RTC日期和时间（例如 "RTC Time now: 22.11.99 22:22:01"）
-                                rtc_datetime_match = re.search(r'RTC Time now:\s*(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2}:\d{2})', line_clean, re.IGNORECASE)
-                                if rtc_datetime_match:
-                                    monitored_data['rtc_date'] = rtc_datetime_match.group(1)  # "22.11.99"
-                                    monitored_data['rtc_time_str'] = rtc_datetime_match.group(2)  # "22:22:01"
+                                # 尝试从日志中解析RTC日期和时间（例如 "RTC time set to: 14.01.26 10:00:00, weekday: 4"）
+                                rtc_set_match = re.search(r'RTC time set to:\s*(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2}:\d{2})', line_clean, re.IGNORECASE)
+                                if rtc_set_match:
+                                    monitored_data['rtc_date'] = rtc_set_match.group(1)  # "14.01.26"
+                                    monitored_data['rtc_time_str'] = rtc_set_match.group(2)  # "10:00:00"
                                 
                                 # Green color for pass
-                                print(f"  \033[32m✓ RTC: OKAY\033[0m")
-                                log_file.write(f"[TEST STATUS] RTC: PASSED - {line_clean}\n")
+                                print(f"  \033[32m✓ RTC: OKAY (写入成功)\033[0m")
+                                log_file.write(f"[TEST STATUS] RTC: PASSED (Time Set) - {line_clean}\n")
                                 log_file.flush()
                                 rtc_extracted = True
                                 detected_states.add('rtc_test')
                                 break
+                        
+                        # 如果没有检测到新的格式，继续检查旧的格式（向后兼容）
+                        if not rtc_extracted:
+                            rtc_patterns = log_patterns.get('rtc_pass', [])
+                            for pattern in rtc_patterns:
+                                if pattern.lower() in line_clean.lower():
+                                    monitored_data['rtc_time'] = line_clean
+                                    
+                                    # 尝试从日志中解析RTC日期和时间（例如 "RTC Time now: 22.11.99 22:22:01"）
+                                    rtc_datetime_match = re.search(r'RTC Time now:\s*(\d{2}\.\d{2}\.\d{2})\s+(\d{2}:\d{2}:\d{2})', line_clean, re.IGNORECASE)
+                                    if rtc_datetime_match:
+                                        monitored_data['rtc_date'] = rtc_datetime_match.group(1)  # "22.11.99"
+                                        monitored_data['rtc_time_str'] = rtc_datetime_match.group(2)  # "22:22:01"
+                                    
+                                    # Green color for pass
+                                    print(f"  \033[32m✓ RTC: OKAY\033[0m")
+                                    log_file.write(f"[TEST STATUS] RTC: PASSED - {line_clean}\n")
+                                    log_file.flush()
+                                    rtc_extracted = True
+                                    detected_states.add('rtc_test')
+                                    break
                     
                     # 4. MAC address extraction
                     if not mac_extracted and extract_mac:
@@ -4953,6 +5006,50 @@ def execute_test_only(config_state):
                                     play_notification_sound()
                                     log_file.write(f"[SOUND] Notification sound played\n")
                                     log_file.flush()
+                                break
+                    
+                    # 5b. Button clicked detection (detect when button is actually pressed)
+                    if monitor_button and button_detected and not button_test_done:
+                        button_clicked_patterns = log_patterns.get('button_clicked', [])
+                        for pattern in button_clicked_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Button was clicked - mark test as passed immediately
+                                button_test_done = True
+                                button_refresh_enabled = False  # Stop dynamic refresh
+                                monitored_data['button_test_result'] = 'PASS'
+                                monitored_data['button_pressed'] = True
+                                # Clear the dynamic line and print green pass message
+                                print("\r  \033[K\033[32m✓ 按键测试: OKAY (检测到 Button clicked)\033[0m")  # \r to return to start, \033[K to clear line
+                                log_file.write(f"[TEST STATUS] Button Test: PASSED (Button clicked detected: {line_clean})\n")
+                                log_file.flush()
+                                # Restore terminal settings if raw mode was enabled
+                                if button_terminal_raw_mode:
+                                    try:
+                                        import termios
+                                        if sys.platform != 'win32' and sys.stdin.isatty():
+                                            fd = sys.stdin.fileno()
+                                            termios.tcsetattr(fd, termios.TCSANOW, button_terminal_old_settings)
+                                            button_terminal_raw_mode = False
+                                    except (ImportError, OSError, AttributeError):
+                                        pass
+                                break
+                    
+                    # 5c. RTC time prompt - auto input
+                    if not rtc_time_sent:
+                        rtc_time_patterns = log_patterns.get('rtc_time_prompt', [])
+                        for pattern in rtc_time_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                # Generate current time in format YYYY-MM-DDTHH:MM:SS
+                                current_time = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+                                time.sleep(0.3)
+                                clean_input = current_time.replace('\n', '').replace('\r', '')
+                                ser.write((clean_input + '\n').encode('utf-8'))
+                                ser.flush()
+                                print(f"  \033[32m✓ RTC时间: 已输入 ({current_time})\033[0m")
+                                monitored_data['rtc_time_input'] = current_time
+                                log_file.write(f"[AUTO INPUT] RTC Time: {current_time}\n")
+                                log_file.flush()
+                                rtc_time_sent = True
                                 break
                     
                     # 6. Hardware version format error detection
