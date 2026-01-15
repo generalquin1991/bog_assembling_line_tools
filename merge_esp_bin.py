@@ -43,6 +43,15 @@ ESP32C3_DEFAULT_ADDRESSES = {
     'app': 0x20000,
 }
 
+# Default ESP8684 flash addresses
+# 说明：这里暂时复用 ESP32 的典型地址布局，如有特殊布局可再调整
+SP8684_DEFAULT_ADDRESSES = {
+    'bootloader': 0,
+    'partition-table': 0x8000,
+    'app': 0x10000,
+    'ota': 0xD000,
+}
+
 
 def clear_screen():
     """Clear screen"""
@@ -96,7 +105,7 @@ def format_size(size_bytes):
     return f"{size_bytes:.2f} TB"
 
 
-def merge_bin_files(bin_files_info, output_path, flash_size=0x400000):
+def merge_bin_files(bin_files_info, output_path, flash_size=0x400000, compact=False):
     """
     Merge multiple bin files into a single combined firmware
     
@@ -104,6 +113,7 @@ def merge_bin_files(bin_files_info, output_path, flash_size=0x400000):
         bin_files_info: List of tuples (file_path, address)
         output_path: Output file path
         flash_size: Total flash size (default 4MB)
+        compact: If True, only output up to the end of the last file (no padding)
     
     Returns:
         True if successful, False otherwise
@@ -115,6 +125,9 @@ def merge_bin_files(bin_files_info, output_path, flash_size=0x400000):
         # Fill with 0xFF (erased flash state)
         for i in range(flash_size):
             flash_data[i] = 0xFF
+        
+        # Track the maximum address used
+        max_address = 0
         
         # Write each bin file at its specified address
         for file_path, address in bin_files_info:
@@ -134,11 +147,20 @@ def merge_bin_files(bin_files_info, output_path, flash_size=0x400000):
                 file_data = f.read()
                 flash_data[address:address + file_size] = file_data
             
+            # Update max_address
+            max_address = max(max_address, address + file_size)
+            
             print(f"  ✓ Merged {os.path.basename(file_path)} at 0x{address:X} ({format_size(file_size)})")
         
         # Write merged file
         with open(output_path, 'wb') as f:
-            f.write(flash_data)
+            if compact:
+                # Only write up to the end of the last file
+                f.write(flash_data[:max_address])
+                print(f"  (Compact mode: output size = {format_size(max_address)})")
+            else:
+                # Write full flash image
+                f.write(flash_data)
         
         output_size = get_file_size(output_path)
         print(f"\n✓ Merged firmware saved: {output_path}")
@@ -371,6 +393,8 @@ def select_bin_files(bin_files, chip_type='ESP32'):
         default_addresses = ESP8266_DEFAULT_ADDRESSES
     elif chip_type == 'ESP32-C3':
         default_addresses = ESP32C3_DEFAULT_ADDRESSES
+    elif chip_type == 'ESP8684':
+        default_addresses = SP8684_DEFAULT_ADDRESSES
     else:
         default_addresses = ESP32_DEFAULT_ADDRESSES
     
@@ -447,26 +471,10 @@ def select_bin_files(bin_files, chip_type='ESP32'):
 
 
 def select_chip_type():
-    """Select ESP chip type"""
-    if inquirer is None:
-        return 'ESP32'
-    
-    question = [
-        inquirer.List('chip_type',
-                     message="Select ESP chip type",
-                     choices=[
-                         ('ESP32', 'ESP32'),
-                         ('ESP32-C3', 'ESP32-C3'),
-                         ('ESP8266', 'ESP8266'),
-                     ],
-                     default='ESP32')
-    ]
-    
-    answer = inquirer.prompt(question)
-    if not answer:
-        return 'ESP32'
-    
-    return answer['chip_type']
+    """Select ESP chip type (now fixed to ESP8684 only)"""
+    # Tool is currently specialized for ESP8684; keep API but always return ESP8684.
+    # TUI simply skips selection step when inquirer is unavailable.
+    return 'ESP8684'
 
 
 def browse_directory_for_output_file(start_dir, default_filename=None):
@@ -607,6 +615,73 @@ def select_output_path(default_name=None, start_dir=None):
             return None
 
 
+def select_flash_size_for_esp8684(default_size=0x200000):
+    """Interactively select flash size for ESP8684 in TUI mode.
+    
+    Only used in TUI; CLI already has --flash-size.
+    """
+    if inquirer is None:
+        # Fallback to default if TUI dependency is missing
+        return default_size
+    
+    options = [
+        ('2MB (0x200000) [module default]', 0x200000),
+        ('4MB (0x400000)', 0x400000),
+        ('Custom...', 'custom'),
+    ]
+    
+    question = [
+        inquirer.List(
+            'flash_size',
+            message="Select flash size for ESP8684 (total flash capacity)",
+            choices=options,
+            default=default_size,
+        )
+    ]
+    
+    try:
+        answer = inquirer.prompt(question)
+        if not answer:
+            return None
+        
+        value = answer.get('flash_size')
+        if value != 'custom':
+            return int(value)
+        
+        # Custom value: ask user to input hex or decimal
+        print("\nYou can enter flash size in hex (e.g., 0x200000) or decimal (e.g., 2097152).")
+        custom_q = [
+            inquirer.Text(
+                'custom_size',
+                message="Enter flash size",
+                default=f"0x{default_size:X}",
+            )
+        ]
+        custom_answer = inquirer.prompt(custom_q)
+        if not custom_answer:
+            return None
+        
+        raw = custom_answer.get('custom_size', '').strip()
+        if not raw:
+            return None
+        
+        try:
+            size = int(raw, 0)  # auto-detect base
+            if size <= 0:
+                print("\n✗ Flash size must be positive.")
+                return None
+            return size
+        except ValueError:
+            print("\n✗ Invalid flash size format.")
+            return None
+    except KeyboardInterrupt:
+        print("\n\nOperation cancelled by user")
+        return None
+    except Exception as e:
+        print(f"\n✗ Error while selecting flash size: {e}")
+        return None
+
+
 def run_tui():
     """Run TUI interface"""
     if inquirer is None:
@@ -673,15 +748,35 @@ def run_tui():
             if not output_path:
                 break
             
-            # Step 6: Confirm and merge
+            # Determine flash size
+            # Default behavior (non-ESP8684) keeps original fixed sizes
+            flash_size = 0x400000  # 4MB default for ESP32 / ESP32-C3
+            if chip_type == 'ESP8266':
+                flash_size = 0x100000  # 1MB for ESP8266
+            elif chip_type == 'ESP8684':
+                # For ESP8684, allow user to choose flash size interactively
+                clear_screen()
+                print_header("ESP Bin File Merger", 80)
+                print_centered("Step 5: Select Flash Size", 80)
+                
+                selected_size = select_flash_size_for_esp8684(default_size=0x200000)
+                if selected_size is None:
+                    break
+                flash_size = selected_size
+            
+            # Confirm and merge (step number depends on whether we had a flash-size step)
             clear_screen()
             print_header("ESP Bin File Merger", 80)
-            print_centered("Step 5: Confirm and Merge", 80)
+            if chip_type == 'ESP8684':
+                print_centered("Step 6: Confirm and Merge", 80)
+            else:
+                print_centered("Step 5: Confirm and Merge", 80)
             
             print("\nConfiguration Summary:")
             print(f"  Chip Type: {chip_type}")
             print(f"  Source Directory: {directory}")
             print(f"  Output File: {output_path}")
+            print(f"  Flash Size: 0x{flash_size:X} ({format_size(flash_size)})")
             print(f"\nFiles to merge:")
             for file_path, address in bin_files_info:
                 size = get_file_size(file_path)
@@ -700,11 +795,11 @@ def run_tui():
             
             # Merge files
             print("\nMerging files...")
-            flash_size = 0x400000  # 4MB default
-            if chip_type == 'ESP8266':
-                flash_size = 0x100000  # 1MB for ESP8266
+            # Use compact mode for ESP8684 to match flash_download_tool CombineBin behavior
+            # flash_download_tool generates compact files (only actual data, not full flash image)
+            compact_mode = (chip_type == 'ESP8684')
             
-            success = merge_bin_files(bin_files_info, output_path, flash_size)
+            success = merge_bin_files(bin_files_info, output_path, flash_size, compact=compact_mode)
             
             if success:
                 print("\n" + "=" * 80)
@@ -742,8 +837,8 @@ def main():
     parser = argparse.ArgumentParser(description='ESP Bin File Merger Tool')
     parser.add_argument('-d', '--directory', help='Directory containing bin files')
     parser.add_argument('-o', '--output', help='Output file path')
-    parser.add_argument('-c', '--chip', choices=['ESP32', 'ESP32-C3', 'ESP8266'],
-                       default='ESP32', help='ESP chip type')
+    parser.add_argument('-c', '--chip', choices=['ESP8684'],
+                       default='ESP8684', help='ESP chip type (currently only ESP8684 is supported)')
     parser.add_argument('--bootloader', help='Bootloader bin file path')
     parser.add_argument('--bootloader-addr', type=lambda x: int(x, 16),
                        help='Bootloader address (hex)')
@@ -755,6 +850,8 @@ def main():
                        help='Application address (hex)')
     parser.add_argument('--flash-size', type=lambda x: int(x, 16),
                        default=0x400000, help='Flash size (hex, default: 0x400000 for 4MB)')
+    parser.add_argument('--compact', action='store_true',
+                       help='Compact mode: only output up to the end of the last file (no padding)')
     
     args = parser.parse_args()
     
@@ -771,6 +868,8 @@ def main():
         default_addresses = ESP8266_DEFAULT_ADDRESSES
     elif args.chip == 'ESP32-C3':
         default_addresses = ESP32C3_DEFAULT_ADDRESSES
+    elif args.chip == 'ESP8684':
+        default_addresses = SP8684_DEFAULT_ADDRESSES
     else:
         default_addresses = ESP32_DEFAULT_ADDRESSES
     
@@ -801,9 +900,20 @@ def main():
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_path = f"merged_firmware_{args.chip}_{timestamp}.bin"
     
+    # Auto-adjust flash_size for ESP8684 if not explicitly set
+    flash_size = args.flash_size
+    if args.chip == 'ESP8684' and args.flash_size == 0x400000:  # Only if using default
+        flash_size = 0x200000  # 2MB for ESP8684-WROOM-02C-H2X
+    
+    # Use compact mode for ESP8684 to match flash_download_tool CombineBin behavior
+    # flash_download_tool generates compact files (only actual data, not full flash image)
+    compact_mode = args.compact
+    if args.chip == 'ESP8684' and not args.compact:
+        compact_mode = True  # Default to compact mode for ESP8684
+    
     # Merge files
     print(f"Merging files for {args.chip}...")
-    success = merge_bin_files(bin_files_info, output_path, args.flash_size)
+    success = merge_bin_files(bin_files_info, output_path, flash_size, compact=compact_mode)
     
     if success:
         print(f"\n✓ Merge completed: {output_path}")
