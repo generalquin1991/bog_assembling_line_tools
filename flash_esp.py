@@ -59,12 +59,27 @@ PRINT_ESPTOOL_LOGS = True
 # 全局开关：控制是否打印 debug 日志（默认开启）
 PRINT_DEBUG_LOGS = True
 
+# 全局日志文件引用（用于统一日志写入）
+_current_log_file = None
+
+
+def set_current_log_file(log_file):
+    """设置当前活动的日志文件，所有打印函数将写入此文件"""
+    global _current_log_file
+    _current_log_file = log_file
+
+
+def get_current_log_file():
+    """获取当前活动的日志文件"""
+    return _current_log_file
+
 
 def debug_print(*args, **kwargs):
     """
     Debug日志打印工具，用于打印程序运行过程中的debug信息。
     格式: [DEBUG] <内容>
     受 PRINT_DEBUG_LOGS 全局开关控制
+    同时写入当前活动的日志文件（如果存在）
     """
     if not PRINT_DEBUG_LOGS:
         return  # 如果开关关闭，不打印
@@ -75,8 +90,25 @@ def debug_print(*args, **kwargs):
         # 将第一个参数添加前缀
         new_args = (prefix + str(args[0]),) + args[1:]
         print(*new_args, **kwargs)
+        
+        # 写入日志文件
+        if _current_log_file is not None:
+            try:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                message = ' '.join(str(arg) for arg in args)
+                _current_log_file.write(f"[{timestamp}] {prefix}{message}\n")
+                _current_log_file.flush()
+            except Exception:
+                pass
     else:
         print(prefix, **kwargs)
+        if _current_log_file is not None:
+            try:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                _current_log_file.write(f"[{timestamp}] {prefix}\n")
+                _current_log_file.flush()
+            except Exception:
+                pass
 
 
 def must_print(message, log_file=None, end="\n"):
@@ -85,17 +117,19 @@ def must_print(message, log_file=None, end="\n"):
     
     - 始终打印到终端（stdout）
     - 如提供 log_file，则同时写入日志文件（带时间戳）
+    - 如果没有提供 log_file，但存在全局日志文件，则写入全局日志文件
     """
     # 控制台输出
     print(message, end=end, flush=True)
     
-    # 日志文件输出（如果有）
-    if log_file is not None:
+    # 日志文件输出（优先使用传入的 log_file，否则使用全局日志文件）
+    target_log_file = log_file if log_file is not None else _current_log_file
+    if target_log_file is not None:
         try:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             # 不重复换行：控制台已经根据 end 控制，这里统一补一个换行
-            log_file.write(f"[{timestamp}] {message}\n")
-            log_file.flush()
+            target_log_file.write(f"[{timestamp}] {message}\n")
+            target_log_file.flush()
         except Exception:
             # 日志写入失败不应影响主流程
             pass
@@ -106,6 +140,7 @@ def ts_print(*args, **kwargs):
     带时间戳的打印工具，仅用于"来自设备的日志行"。
     格式示例：[TARGET] 2026-01-07-15-38-01:010 <原始内容>
     受 PRINT_DEVICE_LOGS 全局开关控制
+    同时写入当前活动的日志文件（如果存在）
     """
     if not PRINT_DEVICE_LOGS:
         return  # 如果开关关闭，不打印
@@ -119,10 +154,27 @@ def ts_print(*args, **kwargs):
     
     if args:
         # 将第一个参数添加前缀和时间戳
-        new_args = (f"{prefix}{ts} " + str(args[0]),) + args[1:]
+        message = f"{prefix}{ts} " + str(args[0])
+        new_args = (message,) + args[1:]
         print(*new_args, **kwargs)
+        
+        # 写入日志文件
+        if _current_log_file is not None:
+            try:
+                # 写入完整消息（包含时间戳和前缀）
+                _current_log_file.write(f"{message}\n")
+                _current_log_file.flush()
+            except Exception:
+                pass
     else:
-        print(f"{prefix}{ts}", **kwargs)
+        msg = f"{prefix}{ts}"
+        print(msg, **kwargs)
+        if _current_log_file is not None:
+            try:
+                _current_log_file.write(f"{msg}\n")
+                _current_log_file.flush()
+            except Exception:
+                pass
 
 try:
     import inquirer
@@ -168,32 +220,22 @@ def get_log_file_path(filename):
 
 
 def save_operation_history(operation_type, details, session_id=None):
-    """保存操作历史到日志目录"""
-    ensure_log_directory()
-    
-    if session_id is None:
-        session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    history_file = get_log_file_path(f"operation_history_{session_id}.txt")
-    
-    try:
-        file_exists = os.path.exists(history_file)
-        with open(history_file, 'a', encoding='utf-8') as f:
-            if not file_exists:
-                f.write(f"Operation History - Session: {session_id}\n")
-                f.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("=" * 80 + "\n\n")
-            
+    """保存操作历史到统一日志文件（如果存在）"""
+    # 优先写入当前活动的统一日志文件
+    if _current_log_file is not None:
+        try:
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            f.write(f"[{timestamp}] {operation_type}\n")
+            _current_log_file.write(f"[{timestamp}] [OPERATION] {operation_type}\n")
             if details:
-                f.write(f"  {details}\n")
-            f.write("\n")
-            f.flush()
-        return history_file
-    except Exception as e:
-        print(f"  ⚠️  无法保存操作历史: {e}")
-        return None
+                _current_log_file.write(f"  {details}\n")
+            _current_log_file.write("\n")
+            _current_log_file.flush()
+            return True
+        except Exception:
+            pass
+    
+    # 如果没有统一日志文件，则不记录（不再创建独立的 operation_history 文件）
+    return None
 
 
 class RestartTUI(Exception):
@@ -601,26 +643,12 @@ class ESPFlasher:
         self.session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
         # 确保日志目录存在
         ensure_log_directory()
-        # 创建统一的监控日志文件（所有步骤共享）
+        # 统一的监控日志文件（由上层函数创建并传入，这里只保留引用）
         self.unified_log_file = None
         self.unified_log_filepath = None
-        try:
-            log_filename = f"monitor_log_{self.session_id}.txt"
-            self.unified_log_filepath = get_log_file_path(log_filename)
-            self.unified_log_file = open(self.unified_log_filepath, 'w', encoding='utf-8')
-            self.unified_log_file.write(f"Unified Monitor Log - Session: {self.session_id}\n")
-            self.unified_log_file.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            self.unified_log_file.write(f"Config: {config_path}\n")
-            self.unified_log_file.write("=" * 80 + "\n\n")
-            self.unified_log_file.flush()
-        except Exception as e:
-            print(f"  ⚠️  Unable to create unified log file: {e}")
-            self.unified_log_file = None
         
-        # 记录初始化操作
-        save_operation_history("ESPFlasher Initialized", 
-                              f"Config: {config_path}, Session ID: {self.session_id}", 
-                              self.session_id)
+        # 记录初始化操作（写入操作历史，但不再创建独立的 operation_history 文件）
+        # 操作历史现在会写入统一日志文件
     
     def load_config(self):
         """加载配置文件，如果波特率字段缺失则从config.json读取默认值"""
@@ -4621,13 +4649,38 @@ def execute_program_and_test(config_state):
     # Create and setup flasher instance
     flasher = _create_and_setup_flasher(config_state)
     
-    # Record operation
-    save_operation_history("Program + Test Started", 
-                          f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
-                          flasher.session_id)
+    # Create unified log file for Program + Test
+    session_id = flasher.session_id
+    log_filename = f"program_test_{session_id}.txt"
+    log_filepath = get_log_file_path(log_filename)
     
-    # Display log directory info
-    _display_operation_header(flasher, "Program + Test")
+    try:
+        unified_log_file = open(log_filepath, 'w', encoding='utf-8')
+        unified_log_file.write(f"{'='*80}\n")
+        unified_log_file.write(f"Program + Test Session\n")
+        unified_log_file.write(f"Session ID: {session_id}\n")
+        unified_log_file.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        unified_log_file.write(f"Mode: {config_state.get('mode_name', 'unknown')}\n")
+        unified_log_file.write(f"Port: {config_state.get('port', 'N/A')}\n")
+        unified_log_file.write(f"Firmware: {os.path.basename(config_state.get('firmware', 'N/A'))}\n")
+        unified_log_file.write(f"Config: {flasher.config_path}\n")
+        unified_log_file.write(f"{'='*80}\n\n")
+        unified_log_file.flush()
+        
+        # Set as global log file
+        set_current_log_file(unified_log_file)
+        
+        # Also set flasher's unified_log_file for backward compatibility
+        flasher.unified_log_file = unified_log_file
+        flasher.unified_log_filepath = log_filepath
+        
+        debug_print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+        debug_print(f"📋 Session ID: {session_id}")
+        debug_print(f"📝 Unified log: {log_filepath}\n")
+        
+    except Exception as e:
+        print(f"  ⚠️  Unable to create unified log file: {e}")
+        unified_log_file = None
     
     try:
         # 1. Basic check UART
@@ -4648,16 +4701,37 @@ def execute_program_and_test(config_state):
             _handle_operation_error("Test failed")
             return False
         
-        print("\n\033[92m✓ Program + Test completed successfully\033[0m")
+        must_print("\n\033[92m✓ Program + Test completed successfully\033[0m")
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"Session Ended - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
+            print(f"\n📝 All logs saved to: {log_filepath}")
+        
         _wait_for_user_return()
         return True
         
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
         return False
     except Exception as e:
         _handle_operation_error("Unexpected error occurred", e)
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"Error: {str(e)}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
         return False
+    finally:
+        if unified_log_file:
+            unified_log_file.close()
+        set_current_log_file(None)
 
 
 def execute_program_only(config_state):
@@ -4668,13 +4742,38 @@ def execute_program_only(config_state):
     # Create and setup flasher instance
     flasher = _create_and_setup_flasher(config_state)
     
-    # Record operation
-    save_operation_history("Program Only Started", 
-                          f"Mode: {config_state.get('mode_name', 'unknown')}, Port: {config_state['port']}, Firmware: {os.path.basename(config_state['firmware'])}", 
-                          flasher.session_id)
+    # Create unified log file for Program Only
+    session_id = flasher.session_id
+    log_filename = f"program_{session_id}.txt"
+    log_filepath = get_log_file_path(log_filename)
     
-    # Display log directory info
-    _display_operation_header(flasher, "Program Only")
+    try:
+        unified_log_file = open(log_filepath, 'w', encoding='utf-8')
+        unified_log_file.write(f"{'='*80}\n")
+        unified_log_file.write(f"Program Only Session\n")
+        unified_log_file.write(f"Session ID: {session_id}\n")
+        unified_log_file.write(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        unified_log_file.write(f"Mode: {config_state.get('mode_name', 'unknown')}\n")
+        unified_log_file.write(f"Port: {config_state.get('port', 'N/A')}\n")
+        unified_log_file.write(f"Firmware: {os.path.basename(config_state.get('firmware', 'N/A'))}\n")
+        unified_log_file.write(f"Config: {flasher.config_path}\n")
+        unified_log_file.write(f"{'='*80}\n\n")
+        unified_log_file.flush()
+        
+        # Set as global log file
+        set_current_log_file(unified_log_file)
+        
+        # Also set flasher's unified_log_file for backward compatibility
+        flasher.unified_log_file = unified_log_file
+        flasher.unified_log_filepath = log_filepath
+        
+        debug_print(f"\n📁 All logs will be saved to: {os.path.abspath(LOG_DIR)}/")
+        debug_print(f"📋 Session ID: {session_id}")
+        debug_print(f"📝 Unified log: {log_filepath}\n")
+        
+    except Exception as e:
+        print(f"  ⚠️  Unable to create unified log file: {e}")
+        unified_log_file = None
     
     try:
         # 1. Basic check UART
@@ -4688,9 +4787,16 @@ def execute_program_only(config_state):
         success = program(flasher, config_state)
         
         if success:
-            print("\n✓ Program completed successfully")
+            must_print("\n\033[92m✓ Program completed successfully\033[0m")
         else:
-            print("\n✗ Program failed")
+            must_print("\n✗ Program failed")
+        
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"Session Ended - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
+            print(f"\n📝 All logs saved to: {log_filepath}")
 
         # Play completion sound when Program Only flow finishes
         if SOUND_ENABLED:
@@ -4701,10 +4807,24 @@ def execute_program_only(config_state):
         
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
         return False
     except Exception as e:
         _handle_operation_error("Unexpected error occurred", e)
+        if unified_log_file:
+            unified_log_file.write(f"\n{'='*80}\n")
+            unified_log_file.write(f"Error: {str(e)}\n")
+            unified_log_file.write(f"{'='*80}\n")
+            unified_log_file.flush()
         return False
+    finally:
+        if unified_log_file:
+            unified_log_file.close()
+        set_current_log_file(None)
 
 
 def run_esptool_command(args):
@@ -4720,10 +4840,25 @@ def run_esptool_command(args):
     
     global PRINT_ESPTOOL_LOGS
     
+    header_msg = "\n[ESPTOOL] ================ esptool 调用 ================"
+    args_msg = f"[ESPTOOL] esptool 参数: {' '.join(args)}"
+    footer_msg = "[ESPTOOL] =============================================\n"
+    
     if PRINT_ESPTOOL_LOGS:
-        print("\n[ESPTOOL] ================ esptool 调用 ================")
-        print("[ESPTOOL] esptool 参数:", " ".join(args))
-        print("[ESPTOOL] =============================================\n")
+        print(header_msg)
+        print(args_msg)
+        print(footer_msg)
+    
+    # 写入日志文件
+    if _current_log_file is not None:
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            _current_log_file.write(f"[{timestamp}] {header_msg}\n")
+            _current_log_file.write(f"[{timestamp}] {args_msg}\n")
+            _current_log_file.write(f"[{timestamp}] {footer_msg}\n")
+            _current_log_file.flush()
+        except Exception:
+            pass
     
     old_argv = sys.argv
     sys.argv = ["esptool.py"] + args
@@ -4757,6 +4892,21 @@ def run_esptool_command(args):
                     print(f"[ESPTOOL] {line}")
         if code != 0:
             print(f"[ESPTOOL] esptool 退出码: {code}")
+    
+    # 写入日志文件
+    if _current_log_file is not None:
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            if output:
+                for line in output.split('\n'):
+                    if line.strip():
+                        _current_log_file.write(f"[{timestamp}] [ESPTOOL] {line}\n")
+            if code != 0:
+                _current_log_file.write(f"[{timestamp}] [ESPTOOL] esptool 退出码: {code}\n")
+            _current_log_file.flush()
+        except Exception:
+            pass
+    
     return code, output, is_secure_download_mode
 
 
@@ -4858,14 +5008,56 @@ def execute_test_only(config_state):
             print(f"  ⚠️  警告: 未找到测试配置 (log_patterns 和 test_states 均为空)")
             print(f"  ⚠️  请检查配置文件中的 procedures 定义")
     
-    # Create unified log file
-    session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_dir = Path(LOG_DIR)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_filepath = log_dir / f"test_only_{session_id}.txt"
+    # Check if there's already an active log file (e.g., from Program + Test mode)
+    existing_log_file = get_current_log_file()
+    log_file_created_here = False
     
-    debug_print(f"\n📁 Test log will be saved to: {log_filepath}")
-    debug_print(f"📋 Session ID: {session_id}\n")
+    if existing_log_file is not None:
+        # Reuse existing log file (e.g., from Program + Test)
+        log_file = existing_log_file
+        log_filepath = None  # Not created here, so no path to track
+        debug_print(f"\n📝 Reusing existing log file from parent operation")
+        debug_print(f"📋 Continuing test in unified log file\n")
+        
+        # Write test section header to existing log file
+        try:
+            log_file.write(f"\n{'='*80}\n")
+            log_file.write(f"Test Phase Started\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Monitor Baud: {monitor_baud}, Bootloader Baud: {bootloader_baud}\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+        except Exception:
+            pass
+    else:
+        # Create new log file for standalone Test Only mode
+        session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_dir = Path(LOG_DIR)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_filepath = log_dir / f"test_only_{session_id}.txt"
+        log_file_created_here = True
+        
+        debug_print(f"\n📁 Test log will be saved to: {log_filepath}")
+        debug_print(f"📋 Session ID: {session_id}\n")
+        
+        # Open log file and set as global log file
+        try:
+            log_file = open(log_filepath, 'w', encoding='utf-8')
+            log_file.write(f"{'='*80}\n")
+            log_file.write(f"Test Only Session\n")
+            log_file.write(f"Session ID: {session_id}\n")
+            log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"Port: {port}, Monitor Baud: {monitor_baud}, Bootloader Baud: {bootloader_baud}\n")
+            log_file.write(f"Config: {config_path}\n")
+            log_file.write(f"{'='*80}\n\n")
+            log_file.flush()
+            
+            # Set as global log file
+            set_current_log_file(log_file)
+            
+        except Exception as e:
+            print(f"  ⚠️  Unable to create log file: {e}")
+            log_file = None
     
     # Initialize monitored data
     monitored_data = {
@@ -4924,18 +5116,12 @@ def execute_test_only(config_state):
     overall_start_time = time.time()
     test_rejected_due_to_app_mode = False  # Flag to indicate test was rejected because device is in application mode
     
-    try:
-        # Open log file first
-        log_file = open(log_filepath, 'w', encoding='utf-8')
-        log_file.write(f"{'='*80}\n")
-        log_file.write(f"Test Only Session\n")
-        log_file.write(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        log_file.write(f"Port: {port}, Monitor Baud: {monitor_baud}, Bootloader Baud: {bootloader_baud}\n")
-        # Debug: 记录当前测试状态，方便对比 P+T 与独立 Test Only 的入参是否一致
+    # Log file is already created above, just add debug state info
+    if log_file:
         log_file.write(f"[DEBUG STATE] config_state = {repr(config_state)}\n")
-        log_file.write(f"{'='*80}\n\n")
         log_file.flush()
-        
+    
+    try:
         # Step 1: Use esptool run command to start user code
         normalized_port = normalize_serial_port(port)
         debug_print(f"  → 使用 esptool run 命令启动用户程序...")
@@ -5884,7 +6070,8 @@ def execute_test_only(config_state):
             print("=" * 80)
             print("  ✗ 按键测试未通过：板卡错误（用户按空格标记）")
             print("=" * 80)
-            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                print(f"\n📁 设备日志已保存到: {log_filepath}")
             
             if SOUND_ENABLED:
                 play_completion_sound()
@@ -5905,7 +6092,8 @@ def execute_test_only(config_state):
             print("=" * 80)
             print("  该设备已经完成工厂配置，当前处于 Application Mode，无法重复执行自检。")
             print("=" * 80)
-            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                print(f"\n📁 设备日志已保存到: {log_filepath}")
             
             # Play completion sound when test is finished (even if rejected), to提示操作完成
             if SOUND_ENABLED:
@@ -5928,7 +6116,8 @@ def execute_test_only(config_state):
             print("  ✗ 在 30 秒监控时间内，未检测到工厂模式日志，也未检测到“已完成工厂配置”的标志。")
             print("  ✗ 无法确定设备当前模式，本次自检已被拒绝。")
             print("=" * 80)
-            print(f"\n📁 设备日志已保存到: {log_filepath}")
+            if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                print(f"\n📁 设备日志已保存到: {log_filepath}")
             
             if SOUND_ENABLED:
                 play_completion_sound()
@@ -6087,7 +6276,8 @@ def execute_test_only(config_state):
                 print(f"  总体结果: \033[33m{passed_tests}/{total_tests} 项通过 ({pass_rate:.1f}%)\033[0m")
                 print(f"  \033[33m⚠️  有 {total_tests - passed_tests} 项未通过\033[0m")
         print("=" * 80)
-        debug_print(f"\n📁 完整日志已保存到: {log_filepath}")
+        if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+            debug_print(f"\n📁 完整日志已保存到: {log_filepath}")
         
         # ========== Update SN status if using SN generator ==========
         generated_sn = monitored_data.get('generated_sn')
@@ -6137,8 +6327,7 @@ def execute_test_only(config_state):
         print("\n\n用户中断操作")
         if 'ser' in locals() and ser is not None and ser.is_open:
             ser.close()
-        if 'log_file' in locals():
-            log_file.close()
+        # Note: log_file will be closed in finally block
         return False
     except Exception as e:
         print(f"\n✗ 发生错误: {e}")
@@ -6146,8 +6335,7 @@ def execute_test_only(config_state):
         traceback.print_exc()
         if 'ser' in locals() and ser is not None and ser.is_open:
             ser.close()
-        if 'log_file' in locals():
-            log_file.close()
+        # Note: log_file will be closed in finally block
         print("\nPress Enter to return...")
         try:
             input()
@@ -6155,6 +6343,30 @@ def execute_test_only(config_state):
             pass
         return False
     finally:
+        # Close log file only if we created it here (standalone Test Only mode)
+        # If it was reused from parent (Program + Test), don't close it
+        if log_file_created_here and 'log_file' in locals() and log_file:
+            try:
+                log_file.write(f"\n{'='*80}\n")
+                log_file.write(f"Session Ended - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"{'='*80}\n")
+                log_file.flush()
+                log_file.close()
+            except Exception:
+                pass
+            # Clear global reference only if we created the file
+            set_current_log_file(None)
+        elif not log_file_created_here and 'log_file' in locals() and log_file:
+            # If reused from parent, just write test phase end marker, don't close
+            try:
+                log_file.write(f"\n{'='*80}\n")
+                log_file.write(f"Test Phase Ended - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"{'='*80}\n")
+                log_file.flush()
+            except Exception:
+                pass
+            # Don't clear global reference - let parent function handle it
+        
         # 记录整个 Test Only 流程耗时到 MAC_YYMMDD_HHMMSS.json（无论调用来源是 T only 还是 P+T）
         try:
             duration = time.time() - overall_start_time
