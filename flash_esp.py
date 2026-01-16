@@ -290,7 +290,9 @@ class SerialMonitor:
                 port=self.port,
                 baudrate=self.baud_rate,
                 timeout=serial_read_timeout_s,  # 从配置读取读超时（默认0.1秒）
-                write_timeout=1
+                write_timeout=1,
+                dsrdtr=False,  # 禁用 DSR/DTR 自动流控
+                rtscts=False   # 禁用 RTS/CTS 自动流控
             )
             # 清空输入输出缓冲区，确保从干净状态开始
             self.serial_conn.reset_input_buffer()
@@ -5225,7 +5227,9 @@ def execute_test_only(config_state):
                     port=normalized_port,
                     baudrate=monitor_baud,
                     timeout=0.1,
-                    write_timeout=1
+                    write_timeout=1,
+                    dsrdtr=False,  # 禁用 DSR/DTR 自动流控
+                    rtscts=False   # 禁用 RTS/CTS 自动流控
                 )
                 break  # Successfully opened
             except serial.SerialException as e:
@@ -5238,6 +5242,17 @@ def execute_test_only(config_state):
                     log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Failed to open serial port after {max_retries} retries: {e}\n")
                     log_file.flush()
                     raise
+        
+        # 清空输入输出缓冲区，确保从干净状态开始
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        
+        # 设置 RTS/DTR 状态，确保设备正常运行
+        # 根据 diagnose_serial_capture.py: RTS=False 表示设备正常运行，RTS=True 表示复位状态
+        # esptool run 已经执行了 hard reset，现在需要确保设备处于运行状态
+        ser.rts = False  # 确保设备处于运行状态（非复位状态）
+        ser.dtr = False  # DTR 保持低电平
+        time.sleep(0.1)  # 等待信号稳定
         
         debug_print("  ✓ 串口已打开，立即开始监听日志...\n")
         log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Serial port opened, immediately starting log monitoring\n")
