@@ -16,8 +16,10 @@ import stat
 import time
 import subprocess
 import platform
+import uuid
+import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
 
 # 尝试导入 fcntl（Unix/Linux 系统支持，Windows 不支持）
 try:
@@ -39,6 +41,11 @@ class HashVerificationError(Exception):
 
 class FileAccessError(Exception):
     """文件访问权限错误 - 需要先获取文件操作权限"""
+    pass
+
+
+class MacMappingError(Exception):
+    """MAC地址映射错误 - MAC地址未在映射表中找到"""
     pass
 
 
@@ -581,36 +588,299 @@ def get_iso_week() -> tuple[str, str]:
     return yy, ww
 
 
+def normalize_mac_address(mac: str) -> str:
+    """
+    归一化MAC地址格式（统一为大写，使用冒号分隔）
+    
+    Args:
+        mac: MAC地址字符串，支持多种格式（如 "AA:BB:CC:DD:EE:FF" 或 "AA-BB-CC-DD-EE-FF"）
+        
+    Returns:
+        str: 归一化后的MAC地址（如 "AA:BB:CC:DD:EE:FF"）
+        
+    Raises:
+        ValueError: 如果MAC地址格式无效
+    """
+    # 移除所有分隔符和空格，转换为大写
+    mac_clean = re.sub(r'[:-]', '', mac.strip().upper())
+    
+    # 验证格式（必须是12位十六进制字符）
+    if not re.match(r'^[0-9A-F]{12}$', mac_clean):
+        raise ValueError(f"无效的MAC地址格式: {mac}")
+    
+    # 重新格式化为标准格式（用冒号分隔）
+    return ':'.join([mac_clean[i:i+2] for i in range(0, 12, 2)])
+
+
+def get_host_mac_address(priority_interface: str = 'en0') -> Optional[str]:
+    """
+    获取本机MAC地址（优先获取指定网络接口的MAC地址）
+    
+    策略：
+    1. 优先获取指定接口（默认en0，以太网）的MAC地址
+    2. 如果指定接口不存在，尝试获取其他物理网络接口的MAC地址
+    3. 排除虚拟接口（loopback、docker、vmware等）
+    
+    Args:
+        priority_interface: 优先使用的网络接口名称（默认: 'en0'）
+        
+    Returns:
+        str: MAC地址（格式: "AA:BB:CC:DD:EE:FF"），如果未找到则返回None
+    """
+    try:
+        if IS_WINDOWS:
+            # Windows系统：使用getnode()获取MAC地址
+            mac_int = uuid.getnode()
+            if mac_int != uuid.getnode():  # 检查是否有效
+                mac_hex = f"{mac_int:012X}"
+                return normalize_mac_address(mac_hex)
+            return None
+        else:
+            # macOS/Linux系统：使用ifconfig或ip命令
+            # 优先尝试获取指定接口的MAC地址
+            try:
+                if IS_MACOS:
+                    # macOS: ifconfig en0 | grep ether
+                    result = subprocess.run(
+                        ['ifconfig', priority_interface],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        # 查找ether字段
+                        match = re.search(r'ether\s+([0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2})', 
+                                        result.stdout, re.IGNORECASE)
+                        if match:
+                            return normalize_mac_address(match.group(1))
+                else:
+                    # Linux: ip link show en0 | grep ether
+                    result = subprocess.run(
+                        ['ip', 'link', 'show', priority_interface],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        match = re.search(r'link/ether\s+([0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2})', 
+                                        result.stdout, re.IGNORECASE)
+                        if match:
+                            return normalize_mac_address(match.group(1))
+            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                pass
+            
+            # 如果指定接口未找到，尝试枚举所有网络接口
+            try:
+                if IS_MACOS:
+                    # macOS: ifconfig | grep ether
+                    result = subprocess.run(
+                        ['ifconfig'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        # 查找所有ether字段，排除loopback
+                        for line in result.stdout.split('\n'):
+                            # 跳过loopback接口
+                            if 'lo0' in line or 'loopback' in line.lower():
+                                continue
+                            match = re.search(r'ether\s+([0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2})', 
+                                            line, re.IGNORECASE)
+                            if match:
+                                mac = normalize_mac_address(match.group(1))
+                                # 排除全零MAC地址
+                                if mac != '00:00:00:00:00:00':
+                                    return mac
+                else:
+                    # Linux: ip link show | grep link/ether
+                    result = subprocess.run(
+                        ['ip', 'link', 'show'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            # 跳过loopback接口
+                            if 'lo:' in line or 'loopback' in line.lower():
+                                continue
+                            match = re.search(r'link/ether\s+([0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2}[:-][0-9a-f]{2})', 
+                                            line, re.IGNORECASE)
+                            if match:
+                                mac = normalize_mac_address(match.group(1))
+                                # 排除全零MAC地址
+                                if mac != '00:00:00:00:00:00':
+                                    return mac
+            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+                pass
+            
+            # 最后尝试使用uuid.getnode()（跨平台方法）
+            try:
+                mac_int = uuid.getnode()
+                if mac_int and mac_int != 0:
+                    mac_hex = f"{mac_int:012X}"
+                    mac = normalize_mac_address(mac_hex)
+                    if mac != '00:00:00:00:00:00':
+                        return mac
+            except Exception:
+                pass
+            
+            return None
+    except Exception as e:
+        print(f"警告: 获取MAC地址时发生错误: {e}")
+        return None
+
+
+def calculate_mac_mapping_hash(mac_mapping: Dict[str, int]) -> str:
+    """
+    计算MAC地址映射表的哈希值（用于验证数据完整性）
+    
+    Args:
+        mac_mapping: MAC地址到computer_id的映射字典
+        
+    Returns:
+        str: SHA256哈希值
+    """
+    # 将映射表转换为排序后的JSON字符串（确保一致性）
+    # 按键（MAC地址）排序
+    sorted_mapping = dict(sorted(mac_mapping.items()))
+    mapping_json = json.dumps(sorted_mapping, sort_keys=True, ensure_ascii=False)
+    
+    # 计算SHA256哈希
+    hash_obj = hashlib.sha256(mapping_json.encode('utf-8'))
+    return hash_obj.hexdigest()
+
+
+def load_mac_mapping(mapping_path: str = "mac_mapping.json", verify_hash: bool = True) -> Dict[str, int]:
+    """
+    加载MAC地址映射表（独立文件）
+    
+    Args:
+        mapping_path: 映射表文件路径
+        verify_hash: 是否验证哈希值（默认True）
+        
+    Returns:
+        dict: MAC地址到computer_id的映射字典
+        
+    Raises:
+        HashVerificationError: 当哈希验证失败时
+    """
+    if os.path.exists(mapping_path):
+        try:
+            with open(mapping_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 兼容旧格式（直接是字典）和新格式（包含hash的对象）
+            if isinstance(data, dict):
+                if 'mappings' in data:
+                    # 新格式
+                    mac_mapping = data['mappings']
+                    stored_hash = data.get('_hash', '')
+                    
+                    # 验证哈希值
+                    if verify_hash and stored_hash:
+                        calculated_hash = calculate_mac_mapping_hash(mac_mapping)
+                        if calculated_hash != stored_hash:
+                            raise HashVerificationError(
+                                f"❌ 错误: MAC映射表哈希验证失败！文件可能已被手动修改。\n"
+                                f"   存储: {stored_hash[:16]}...\n"
+                                f"   计算: {calculated_hash[:16]}...\n"
+                                f"   为防止未授权的修改，已停止操作。\n"
+                                f"   请使用 --register-mac 命令注册新的MAC地址。"
+                            )
+                    
+                    return mac_mapping
+                else:
+                    # 旧格式（直接是映射字典），需要迁移
+                    mac_mapping = data
+                    # 自动保存为新格式
+                    save_mac_mapping(mac_mapping, mapping_path)
+                    return mac_mapping
+            else:
+                raise ValueError(f"MAC映射表文件格式不正确: {mapping_path}")
+        except (json.JSONDecodeError, IOError) as e:
+            raise ValueError(f"读取MAC映射表文件失败: {e}")
+    else:
+        # 文件不存在，返回空字典
+        return {}
+
+
+def save_mac_mapping(mac_mapping: Dict[str, int], mapping_path: str = "mac_mapping.json") -> bool:
+    """
+    保存MAC地址映射表到独立文件（自动更新哈希值）
+    
+    Args:
+        mac_mapping: MAC地址到computer_id的映射字典
+        mapping_path: 映射表文件路径
+        
+    Returns:
+        bool: 是否保存成功
+    """
+    try:
+        # 计算哈希值
+        hash_value = calculate_mac_mapping_hash(mac_mapping)
+        
+        # 构建数据结构
+        data = {
+            '_hash': hash_value,
+            '_hash_algorithm': 'SHA256',
+            '_note': 'Do not modify this file manually. The _hash field is used to verify data integrity.',
+            'mappings': mac_mapping
+        }
+        
+        with open(mapping_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except IOError as e:
+        print(f"错误: 保存MAC映射表文件失败: {e}")
+        return False
+
+
 def load_sn_config(config_path: str = "sn_config.json") -> dict:
     """
-    加载序列号配置文件
+    加载序列号配置文件（本地状态，不包含MAC映射表）
+    
+    注意：MAC映射表已独立到 mac_mapping.json 文件中
     
     Args:
         config_path: 配置文件路径
         
     Returns:
-        dict: 配置信息，包含 computer_id, current_week, sequence_number, last_generated_at, last_generated_sn, status
+        dict: 配置信息，包含 current_week, sequence_number, last_generated_at, 
+              last_generated_sn, status
+              注意：computer_id不在配置文件中，必须从MAC映射表获取
     """
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-                # 确保所有必需的字段存在
-                config.setdefault('computer_id', 1)
+                
+                # 确保所有必需的字段存在（注意：computer_id不在配置文件中，必须从MAC映射表获取）
                 config.setdefault('current_week', '0000')
                 config.setdefault('sequence_number', 0)
                 config.setdefault('last_generated_at', None)
                 config.setdefault('last_generated_sn', None)
-                config.setdefault('status', 'pending')  # pending, occupied, failed
+                config.setdefault('status', 'pending')
+                
+                # 移除旧格式中的mac_mapping相关字段（如果存在）
+                config.pop('mac_mapping', None)
+                config.pop('_mac_mapping_hash', None)
+                
                 return config
         except (json.JSONDecodeError, IOError) as e:
             print(f"警告: 读取配置文件失败: {e}")
-            return {'computer_id': 1, 'current_week': '0000', 'sequence_number': 0, 
-                   'last_generated_at': None, 'last_generated_sn': None, 'status': 'pending'}
+            # 返回默认配置
+            return {
+                'current_week': '0000', 
+                'sequence_number': 0,
+                'last_generated_at': None,
+                'last_generated_sn': None,
+                'status': 'pending'
+            }
     else:
-        # 如果文件不存在，创建默认配置
+        # 如果文件不存在，创建默认配置（注意：computer_id不在配置文件中，必须从MAC映射表获取）
         default_config = {
-            'computer_id': 1, 
             'current_week': '0000', 
             'sequence_number': 0,
             'last_generated_at': None,
@@ -623,7 +893,9 @@ def load_sn_config(config_path: str = "sn_config.json") -> dict:
 
 def save_sn_config(config: dict, config_path: str = "sn_config.json") -> bool:
     """
-    保存序列号配置到文件
+    保存序列号配置到文件（本地状态，不包含MAC映射表）
+    
+    注意：MAC映射表已独立到 mac_mapping.json 文件中
     
     Args:
         config: 配置信息
@@ -633,12 +905,69 @@ def save_sn_config(config: dict, config_path: str = "sn_config.json") -> bool:
         bool: 是否保存成功
     """
     try:
+        # 移除mac_mapping相关字段（如果存在，确保不会保存）
+        config_clean = {k: v for k, v in config.items() 
+                       if k not in ['mac_mapping', '_mac_mapping_hash']}
+        
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+            json.dump(config_clean, f, indent=2, ensure_ascii=False)
         return True
     except IOError as e:
         print(f"错误: 保存配置文件失败: {e}")
         return False
+
+
+def get_computer_id_from_mac(mac_address: Optional[str] = None, 
+                              mapping_path: str = "mac_mapping.json") -> int:
+    """
+    根据本机MAC地址从映射表中查找对应的computer_id
+    
+    Args:
+        mac_address: MAC地址，如果为None则自动获取本机MAC地址
+        mapping_path: MAC映射表文件路径
+        
+    Returns:
+        int: computer_id (1-9)
+        
+    Raises:
+        MacMappingError: 当MAC地址未在映射表中找到时
+        HashVerificationError: 当MAC映射表哈希验证失败时
+    """
+    # 获取MAC地址
+    if mac_address is None:
+        mac_address = get_host_mac_address('en0')
+        if mac_address is None:
+            raise MacMappingError(
+                "❌ 错误: 无法获取本机MAC地址。\n"
+                "   请检查网络接口配置，或手动指定MAC地址。"
+            )
+    
+    # 归一化MAC地址
+    try:
+        mac_normalized = normalize_mac_address(mac_address)
+    except ValueError as e:
+        raise MacMappingError(f"❌ 错误: 无效的MAC地址格式: {mac_address}")
+    
+    # 加载MAC映射表（会验证hash）
+    mac_mapping = load_mac_mapping(mapping_path, verify_hash=True)
+    
+    # 查找映射
+    if mac_normalized in mac_mapping:
+        computer_id = mac_mapping[mac_normalized]
+        # 验证computer_id范围
+        if not (1 <= computer_id <= 9):
+            raise MacMappingError(
+                f"❌ 错误: 映射表中的computer_id无效: {computer_id} (必须在1-9之间)\n"
+                f"   MAC地址: {mac_normalized}"
+            )
+        return computer_id
+    else:
+        # MAC地址未找到，报错
+        raise MacMappingError(
+            f"❌ 错误: 本机MAC地址 {mac_normalized} 未在映射表中找到。\n"
+            f"   请联系管理员使用以下命令注册MAC地址：\n"
+            f"   python sn_generator.py --register-mac {mac_normalized} --computer-id <ID>"
+        )
 
 
 def calculate_entry_hash(entry: dict) -> str:
@@ -998,7 +1327,8 @@ def verify_sn_logs(log_path: str = "all_sn_logs.json") -> tuple[bool, str]:
 
 
 def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config.json",
-                log_path: str = "all_sn_logs.json", force: bool = False) -> str:
+                log_path: str = "all_sn_logs.json", mapping_path: str = "mac_mapping.json",
+                force: bool = False) -> str:
     """
     生成序列号
     
@@ -1006,11 +1336,14 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     - 64: 固定前缀
     - YY: 年份后两位
     - WW: ISO周数 (01-53)
-    - X: 电脑编号 (1-9)
+    - X: 电脑编号 (1-9) - 必须通过MAC地址映射表获取，禁止手动设置
     - nnnnn: 序列号 (00001-99999)
     
+    注意：computer_id必须通过本机MAC地址从映射表中查找，不能手动指定。
+    这确保了每个电脑的编号是硬编码的，无法随意修改。
+    
     Args:
-        computer_id: 电脑编号，如果为None则从配置文件读取
+        computer_id: 已废弃，不再支持手动指定。必须通过MAC地址映射表自动获取。
         config_path: 配置文件路径
         log_path: 日志文件路径
         force: 是否强制继续（即使hash验证失败，不推荐使用）
@@ -1021,15 +1354,33 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     Raises:
         ValueError: 如果序列号超过99999或电脑编号无效
         HashVerificationError: 当哈希验证失败且 force=False 时
+        MacMappingError: 当本机MAC地址未在映射表中找到时
     """
-    # 加载配置
+    # 加载配置（会验证MAC映射表的hash）
     config = load_sn_config(config_path)
     
-    # 获取电脑编号
-    if computer_id is None:
-        computer_id = config.get('computer_id', 1)
+    # 强制通过MAC地址映射表获取computer_id（禁止手动设置）
+    if computer_id is not None:
+        raise ValueError(
+            "❌ 错误: 不再支持手动指定computer_id。\n"
+            "   computer_id必须通过本机MAC地址从映射表中自动获取。\n"
+            "   请移除computer_id参数，程序会自动根据MAC地址查找。"
+        )
     
-    # 验证电脑编号范围 (1-9)
+    # 从MAC地址映射表获取computer_id（硬编码，确保绝对安全）
+    try:
+        computer_id = get_computer_id_from_mac(None, mapping_path)
+    except MacMappingError as e:
+        raise  # 直接抛出，不包装
+    except HashVerificationError as e:
+        if force:
+            print(f"⚠️  警告: {str(e)}")
+            # 强制模式下，跳过hash验证重新加载
+            computer_id = get_computer_id_from_mac(None, mapping_path)
+        else:
+            raise
+    
+    # 验证电脑编号范围 (1-9) - 双重检查
     if not (1 <= computer_id <= 9):
         raise ValueError(f"电脑编号必须在1-9之间，当前值: {computer_id}")
     
@@ -1056,9 +1407,9 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     if sequence_number > 99999:
         raise ValueError(f"序列号已超过最大值99999，当前周: {current_week}")
     
-    # 更新配置
+    # 更新配置（注意：不保存computer_id，确保绝对硬编码）
     config['sequence_number'] = sequence_number
-    config['computer_id'] = computer_id
+    # 不保存computer_id到配置文件，确保每次都是从MAC映射表硬编码获取
     
     # 生成序列号
     sn = f"64{yy}{ww}{computer_id}{sequence_number:05d}"
@@ -1069,7 +1420,7 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     config['last_generated_sn'] = sn
     config['status'] = 'pending'  # 新生成的序列号默认为pending状态
     
-    # 保存配置
+    # 保存配置（不包含computer_id，确保硬编码）
     if not save_sn_config(config, config_path):
         print("警告: 配置保存失败，但序列号已生成")
     
@@ -1086,7 +1437,7 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     return sn
 
 
-def get_current_status(config_path: str = "sn_config.json") -> dict:
+def get_current_status(config_path: str = "sn_config.json", mapping_path: str = "mac_mapping.json") -> dict:
     """
     获取当前序列号生成器状态
     
@@ -1095,13 +1446,20 @@ def get_current_status(config_path: str = "sn_config.json") -> dict:
         
     Returns:
         dict: 包含 computer_id, current_week, sequence_number, next_sn 等信息
+        
+    Raises:
+        MacMappingError: 当本机MAC地址未在映射表中找到时
+        HashVerificationError: 当MAC映射表哈希验证失败时
     """
     config = load_sn_config(config_path)
     yy, ww = get_iso_week()
     current_week = yy + ww
     
+    # 从MAC地址映射表获取computer_id（硬编码，必须成功，不允许fallback）
+    computer_id = get_computer_id_from_mac(None, mapping_path)
+    
     status = {
-        'computer_id': config.get('computer_id', 1),
+        'computer_id': computer_id,
         'current_week': current_week,
         'stored_week': config.get('current_week', '0000'),
         'sequence_number': config.get('sequence_number', 0),
@@ -1121,22 +1479,128 @@ def get_current_status(config_path: str = "sn_config.json") -> dict:
 
 def set_computer_id(computer_id: int, config_path: str = "sn_config.json") -> bool:
     """
-    设置电脑编号
+    设置电脑编号（已禁用）
+    
+    注意：此函数已被禁用。computer_id必须通过MAC地址映射表自动获取，
+    禁止手动设置以确保硬编码安全。
     
     Args:
+        computer_id: 电脑编号 (1-9) - 已废弃
+        config_path: 配置文件路径
+        
+    Returns:
+        bool: 总是返回False（函数已禁用）
+        
+    Raises:
+        ValueError: 总是抛出异常，因为手动设置已被禁用
+    """
+    raise ValueError(
+        "❌ 错误: 手动设置computer_id已被禁用。\n"
+        "   computer_id必须通过本机MAC地址从映射表中自动获取。\n"
+        "   请使用 --register-mac 命令注册新的MAC地址映射关系。"
+    )
+
+
+def register_mac_address(mac_address: str, computer_id: int, 
+                         mapping_path: str = "mac_mapping.json") -> bool:
+    """
+    注册新的MAC地址到computer_id的映射关系
+    
+    Args:
+        mac_address: MAC地址（支持多种格式）
         computer_id: 电脑编号 (1-9)
         config_path: 配置文件路径
         
     Returns:
-        bool: 是否设置成功
+        bool: 是否注册成功
+        
+    Raises:
+        ValueError: 如果MAC地址格式无效或computer_id超出范围
     """
+    # 验证computer_id范围
     if not (1 <= computer_id <= 9):
-        print(f"错误: 电脑编号必须在1-9之间，当前值: {computer_id}")
-        return False
+        raise ValueError(f"错误: computer_id必须在1-9之间，当前值: {computer_id}")
     
-    config = load_sn_config(config_path)
-    config['computer_id'] = computer_id
-    return save_sn_config(config, config_path)
+    # 归一化MAC地址
+    try:
+        mac_normalized = normalize_mac_address(mac_address)
+    except ValueError as e:
+        raise ValueError(f"错误: 无效的MAC地址格式: {mac_address}")
+    
+    # 加载MAC映射表（不验证hash，因为我们要修改它）
+    mac_mapping = load_mac_mapping(mapping_path, verify_hash=False)
+    
+    # 检查MAC地址是否已存在
+    if mac_normalized in mac_mapping:
+        existing_id = mac_mapping[mac_normalized]
+        if existing_id == computer_id:
+            print(f"✓ MAC地址 {mac_normalized} 已存在，映射到 computer_id={computer_id}")
+            return True
+        else:
+            raise ValueError(
+                f"错误: MAC地址 {mac_normalized} 已存在，但映射到不同的computer_id: {existing_id}\n"
+                f"   无法修改为 {computer_id}。如需修改，请先手动编辑配置文件。"
+            )
+    
+    # 检查computer_id是否已被其他MAC使用
+    for mac, cid in mac_mapping.items():
+        if cid == computer_id:
+            raise ValueError(
+                f"错误: computer_id {computer_id} 已被MAC地址 {mac} 使用。\n"
+                f"   每个computer_id只能映射到一个MAC地址。"
+            )
+    
+    # 添加新映射
+    mac_mapping[mac_normalized] = computer_id
+    
+    # 保存MAC映射表（会自动更新hash）
+    if save_mac_mapping(mac_mapping, mapping_path):
+        print(f"✓ MAC地址 {mac_normalized} 已成功注册，映射到 computer_id={computer_id}")
+        print(f"  映射表hash已自动更新")
+        return True
+    else:
+        print(f"✗ 保存MAC映射表失败")
+        return False
+
+
+def unregister_mac_address(mac_address: str, mapping_path: str = "mac_mapping.json") -> bool:
+    """
+    删除MAC地址映射关系
+    
+    Args:
+        mac_address: MAC地址（支持多种格式）
+        config_path: 配置文件路径
+        
+    Returns:
+        bool: 是否删除成功
+        
+    Raises:
+        ValueError: 如果MAC地址格式无效或未找到
+    """
+    # 归一化MAC地址
+    try:
+        mac_normalized = normalize_mac_address(mac_address)
+    except ValueError as e:
+        raise ValueError(f"错误: 无效的MAC地址格式: {mac_address}")
+    
+    # 加载MAC映射表（不验证hash，因为我们要修改它）
+    mac_mapping = load_mac_mapping(mapping_path, verify_hash=False)
+    
+    # 检查MAC地址是否存在
+    if mac_normalized not in mac_mapping:
+        raise ValueError(f"错误: MAC地址 {mac_normalized} 未在映射表中找到")
+    
+    # 删除映射
+    del mac_mapping[mac_normalized]
+    
+    # 保存MAC映射表（会自动更新hash）
+    if save_mac_mapping(mac_mapping, mapping_path):
+        print(f"✓ MAC地址 {mac_normalized} 已成功从映射表中删除")
+        print(f"  映射表hash已自动更新")
+        return True
+    else:
+        print(f"✗ 保存MAC映射表失败")
+        return False
 
 
 def reset_sequence(config_path: str = "sn_config.json") -> bool:
@@ -1163,11 +1627,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 生成序列号（默认操作）
+  # 生成序列号（默认操作，自动根据MAC地址获取computer_id）
   python sn_generator.py
   
   # 显示当前状态
   python sn_generator.py --status
+  
+  # 注册新的MAC地址映射（管理员操作）
+  python sn_generator.py --register-mac AA:BB:CC:DD:EE:01 --computer-id 1
+  
+  # 删除MAC地址映射（管理员操作）
+  python sn_generator.py --unregister-mac AA:BB:CC:DD:EE:01
   
   # 更新序列号状态
   python sn_generator.py --update-status occupied --sn 642602100057 --mac 68:25:DD:AB:70:30
@@ -1181,15 +1651,17 @@ def main():
   # 取消文件保护（紧急情况）
   python sn_generator.py --unprotect
 
-文件保护说明:
-  使用 --protect 设置文件保护后，只有通过 sn_generator 模块才能修改文件。
-  编辑器（如 VS Code、vim 等）将无法直接编辑文件。
-  程序运行时会自动临时移除保护，退出后自动恢复。
+重要说明:
+  - computer_id必须通过MAC地址映射表自动获取，禁止手动设置
+  - 使用 --register-mac 注册新的MAC地址映射关系
+  - 映射表通过hash校验，防止未授权修改
         """
     )
-    parser.add_argument('--generate', '-g', action='store_true', help='生成一个新的序列号（默认操作）')
+    parser.add_argument('--generate', '-g', action='store_true', help='生成一个新的序列号（默认操作，自动根据MAC地址获取computer_id）')
     parser.add_argument('--status', '-s', action='store_true', help='显示当前状态（电脑编号、序列号、下一个SN等）')
-    parser.add_argument('--set-computer-id', type=int, metavar='ID', help='设置电脑编号 (1-9)')
+    parser.add_argument('--register-mac', type=str, metavar='MAC', help='注册新的MAC地址映射（需配合--computer-id使用）')
+    parser.add_argument('--unregister-mac', type=str, metavar='MAC', help='删除MAC地址映射（管理员操作）')
+    parser.add_argument('--computer-id', type=int, metavar='ID', help='电脑编号 (1-9)，仅用于--register-mac命令')
     parser.add_argument('--reset', action='store_true', help='重置当前周的序列号（谨慎使用）')
     parser.add_argument('--update-status', type=str, metavar='STATUS', help='更新序列号状态: occupied/failed/pending（需配合--sn使用）')
     parser.add_argument('--sn', type=str, metavar='SN', help='要更新状态的序列号（需配合--update-status使用）')
@@ -1199,6 +1671,7 @@ def main():
     parser.add_argument('--protect', action='store_true', help='保护文件，防止编辑器直接修改（设置不可变标志，macOS/Linux）')
     parser.add_argument('--unprotect', action='store_true', help='取消文件保护（仅用于紧急情况，允许编辑器直接修改）')
     parser.add_argument('--config', type=str, default='sn_config.json', help='配置文件路径 (默认: sn_config.json)')
+    parser.add_argument('--mapping', type=str, default='mac_mapping.json', help='MAC映射表文件路径 (默认: mac_mapping.json)')
     parser.add_argument('--log', type=str, default='all_sn_logs.json', help='日志文件路径 (默认: all_sn_logs.json)')
     
     args = parser.parse_args()
@@ -1217,15 +1690,37 @@ def main():
             return 1
     
     # 如果没有指定任何操作，默认生成序列号
-    if not any([args.generate, args.status, args.set_computer_id is not None, args.reset, args.update_status, args.verify]):
+    if not any([args.generate, args.status, args.register_mac is not None, args.unregister_mac is not None, args.reset, args.update_status, args.verify]):
         args.generate = True
     
-    if args.set_computer_id is not None:
-        if set_computer_id(args.set_computer_id, args.config):
-            print(f"✓ 电脑编号已设置为: {args.set_computer_id}")
-        else:
-            print("✗ 设置电脑编号失败")
-        return
+    if args.unregister_mac is not None:
+        try:
+            if unregister_mac_address(args.unregister_mac, args.mapping):
+                return 0
+            else:
+                return 1
+        except ValueError as e:
+            print(f"错误: {e}")
+            return 1
+        except Exception as e:
+            print(f"错误: 删除MAC地址映射失败: {e}")
+            return 1
+    
+    if args.register_mac is not None:
+        if args.computer_id is None:
+            print("错误: 使用 --register-mac 时必须指定 --computer-id")
+            return 1
+        try:
+            if register_mac_address(args.register_mac, args.computer_id, args.mapping):
+                return 0
+            else:
+                return 1
+        except ValueError as e:
+            print(f"错误: {e}")
+            return 1
+        except Exception as e:
+            print(f"错误: 注册MAC地址失败: {e}")
+            return 1
     
     if args.verify:
         # verify_sn_logs() 会自动获取文件访问权限
@@ -1261,7 +1756,7 @@ def main():
         return
     
     if args.status:
-        status = get_current_status(args.config)
+        status = get_current_status(args.config, args.mapping)
         config = load_sn_config(args.config)
         print("\n序列号生成器状态:")
         print(f"  电脑编号: {status['computer_id']}")
@@ -1282,7 +1777,7 @@ def main():
     if args.generate:
         # generate_sn() 会自动获取文件访问权限
         try:
-            sn = generate_sn(config_path=args.config, log_path=args.log, force=args.force)
+            sn = generate_sn(config_path=args.config, log_path=args.log, mapping_path=args.mapping, force=args.force)
             print(sn)
         except HashVerificationError as e:
             print(str(e))
