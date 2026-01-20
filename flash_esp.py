@@ -4717,22 +4717,36 @@ def execute_program_and_test(config_state):
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
         if unified_log_file:
-            unified_log_file.write(f"\n{'='*80}\n")
-            unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            unified_log_file.write(f"{'='*80}\n")
-            unified_log_file.flush()
+            try:
+                if not unified_log_file.closed:
+                    unified_log_file.write(f"\n{'='*80}\n")
+                    unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    unified_log_file.write(f"{'='*80}\n")
+                    unified_log_file.flush()
+            except (ValueError, IOError):
+                pass
         return False
     except Exception as e:
         _handle_operation_error("Unexpected error occurred", e)
         if unified_log_file:
-            unified_log_file.write(f"\n{'='*80}\n")
-            unified_log_file.write(f"Error: {str(e)}\n")
-            unified_log_file.write(f"{'='*80}\n")
-            unified_log_file.flush()
+            try:
+                # 检查文件是否已关闭
+                if not unified_log_file.closed:
+                    unified_log_file.write(f"\n{'='*80}\n")
+                    unified_log_file.write(f"Error: {str(e)}\n")
+                    unified_log_file.write(f"{'='*80}\n")
+                    unified_log_file.flush()
+            except (ValueError, IOError) as write_error:
+                # 文件已关闭或写入失败，忽略错误
+                pass
         return False
     finally:
         if unified_log_file:
-            unified_log_file.close()
+            try:
+                if not unified_log_file.closed:
+                    unified_log_file.close()
+            except:
+                pass
         set_current_log_file(None)
 
 
@@ -4810,22 +4824,36 @@ def execute_program_only(config_state):
     except KeyboardInterrupt:
         print("\n\nUser interrupted operation")
         if unified_log_file:
-            unified_log_file.write(f"\n{'='*80}\n")
-            unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            unified_log_file.write(f"{'='*80}\n")
-            unified_log_file.flush()
+            try:
+                if not unified_log_file.closed:
+                    unified_log_file.write(f"\n{'='*80}\n")
+                    unified_log_file.write(f"User interrupted - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    unified_log_file.write(f"{'='*80}\n")
+                    unified_log_file.flush()
+            except (ValueError, IOError):
+                pass
         return False
     except Exception as e:
         _handle_operation_error("Unexpected error occurred", e)
         if unified_log_file:
-            unified_log_file.write(f"\n{'='*80}\n")
-            unified_log_file.write(f"Error: {str(e)}\n")
-            unified_log_file.write(f"{'='*80}\n")
-            unified_log_file.flush()
+            try:
+                # 检查文件是否已关闭
+                if not unified_log_file.closed:
+                    unified_log_file.write(f"\n{'='*80}\n")
+                    unified_log_file.write(f"Error: {str(e)}\n")
+                    unified_log_file.write(f"{'='*80}\n")
+                    unified_log_file.flush()
+            except (ValueError, IOError) as write_error:
+                # 文件已关闭或写入失败，忽略错误
+                pass
         return False
     finally:
         if unified_log_file:
-            unified_log_file.close()
+            try:
+                if not unified_log_file.closed:
+                    unified_log_file.close()
+            except:
+                pass
         set_current_log_file(None)
 
 
