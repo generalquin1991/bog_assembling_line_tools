@@ -1,0 +1,3 @@
+[submodule "firmware"]
+	path = firmware
+	url = https://github.com/generalquin1991/BOG_CO2_firmware.git
