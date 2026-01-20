@@ -1,8 +1,9 @@
 {
-  "_hash": "7cce9be3eaf929fb9db7ab215d27d9d20ac4f2b4efdb8e0635d64d22c73a9dd8",
+  "_hash": "647c2119ef3f333d497e28eac74d4f8019a10bb0dd3d295df55e39f63bdaa3ca",
   "_hash_algorithm": "SHA256",
   "_note": "Do not modify this file manually. The _hash field is used to verify data integrity.",
   "mappings": {
-    "D2:0A:BF:CC:2E:27": 1
+    "D2:0A:BF:CC:2E:27": 1,
+    "1C:57:DC:29:4A:6B": 2
   }
 }
