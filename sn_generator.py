@@ -34,6 +34,63 @@ IS_LINUX = platform.system() == 'Linux'
 IS_WINDOWS = platform.system() == 'Windows'
 
 
+def get_system_serial_number() -> str:
+    """
+    获取本机系统序列号（仅支持macOS）
+    
+    Returns:
+        str: 系统序列号，例如 "K6X46XLL9C"
+        
+    Raises:
+        MacMappingError: 当无法获取序列号或系统不支持时
+    """
+    if not IS_MACOS:
+        raise MacMappingError(
+            "❌ 错误: 当前系统不支持通过系统序列号获取computer_id（仅支持macOS）。"
+        )
+    
+    try:
+        result = subprocess.run(
+            ['system_profiler', 'SPHardwareDataType'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode != 0:
+            raise MacMappingError(
+                "❌ 错误: 无法获取本机系统序列号。\n"
+                "   请检查 system_profiler 命令是否可用。"
+            )
+        
+        serial = None
+        for line in result.stdout.splitlines():
+            if 'Serial Number (system):' in line:
+                # 形如: "      Serial Number (system): K6X46XLL9C"
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    serial = parts[1].strip()
+                    break
+        
+        if not serial:
+            raise MacMappingError(
+                "❌ 错误: 未在 system_profiler 输出中找到系统序列号。\n"
+                "   请确认命令 `system_profiler SPHardwareDataType` 的输出格式未被修改。"
+            )
+        
+        return serial
+    except subprocess.TimeoutExpired:
+        raise MacMappingError(
+            "❌ 错误: 获取系统序列号超时。\n"
+            "   请稍后重试，或手动运行 `system_profiler SPHardwareDataType` 检查系统状态。"
+        )
+    except FileNotFoundError:
+        raise MacMappingError(
+            "❌ 错误: system_profiler 命令不存在，无法获取系统序列号。"
+        )
+    except Exception as e:
+        raise MacMappingError(f"❌ 错误: 获取系统序列号时发生异常: {e}")
+
+
 class HashVerificationError(Exception):
     """日志文件哈希验证失败异常"""
     pass
@@ -970,6 +1027,47 @@ def get_computer_id_from_mac(mac_address: Optional[str] = None,
         )
 
 
+def get_computer_id_from_serial(mapping_path: str = "mac_mapping.json") -> int:
+    """
+    根据本机系统序列号从映射表中查找对应的computer_id
+    
+    注意：与MAC映射共用同一个映射文件（mac_mapping.json），
+    只是键由MAC地址扩展为“标识字符串”（此处为系统序列号）。
+    
+    Args:
+        mapping_path: 映射表文件路径
+        
+    Returns:
+        int: computer_id (1-9)
+        
+    Raises:
+        MacMappingError: 当序列号未在映射表中找到时
+        HashVerificationError: 当映射表哈希验证失败时
+    """
+    # 获取系统序列号
+    serial = get_system_serial_number()
+    
+    # 加载映射表（会验证hash）
+    mac_mapping = load_mac_mapping(mapping_path, verify_hash=True)
+    
+    # 直接使用序列号字符串作为键
+    if serial in mac_mapping:
+        computer_id = mac_mapping[serial]
+        if not (1 <= computer_id <= 9):
+            raise MacMappingError(
+                f"❌ 错误: 映射表中的computer_id无效: {computer_id} (必须在1-9之间)\n"
+                f"   系统序列号: {serial}"
+            )
+        return computer_id
+    else:
+        # 序列号未找到，报错
+        raise MacMappingError(
+            f"❌ 错误: 本机系统序列号 {serial} 未在映射表中找到。\n"
+            f"   请联系管理员使用以下命令注册序列号：\n"
+            f"   python sn_generator.py --register-serial {serial} --computer-id <ID>"
+        )
+
+
 def calculate_entry_hash(entry: dict) -> str:
     """
     计算单个日志条目的哈希值（基于sn, computer_id, week, generated_at, mac_address五个属性）
@@ -1336,10 +1434,10 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     - 64: 固定前缀
     - YY: 年份后两位
     - WW: ISO周数 (01-53)
-    - X: 电脑编号 (1-9) - 必须通过MAC地址映射表获取，禁止手动设置
+    - X: 电脑编号 (1-9) - 必须通过系统序列号映射表获取，禁止手动设置
     - nnnnn: 序列号 (00001-99999)
     
-    注意：computer_id必须通过本机MAC地址从映射表中查找，不能手动指定。
+    注意：computer_id必须通过本机系统序列号从映射表中查找，不能手动指定。
     这确保了每个电脑的编号是硬编码的，无法随意修改。
     
     Args:
@@ -1367,9 +1465,9 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
             "   请移除computer_id参数，程序会自动根据MAC地址查找。"
         )
     
-    # 从MAC地址映射表获取computer_id（硬编码，确保绝对安全）
+    # 从系统序列号映射表获取computer_id（硬编码，确保绝对安全）
     try:
-        computer_id = get_computer_id_from_mac(None, mapping_path)
+        computer_id = get_computer_id_from_serial(mapping_path)
     except MacMappingError as e:
         raise  # 直接抛出，不包装
     except HashVerificationError as e:
@@ -1455,8 +1553,8 @@ def get_current_status(config_path: str = "sn_config.json", mapping_path: str = 
     yy, ww = get_iso_week()
     current_week = yy + ww
     
-    # 从MAC地址映射表获取computer_id（硬编码，必须成功，不允许fallback）
-    computer_id = get_computer_id_from_mac(None, mapping_path)
+    # 从系统序列号映射表获取computer_id（硬编码，必须成功，不允许fallback）
+    computer_id = get_computer_id_from_serial(mapping_path)
     
     status = {
         'computer_id': computer_id,
@@ -1603,6 +1701,69 @@ def unregister_mac_address(mac_address: str, mapping_path: str = "mac_mapping.js
         return False
 
 
+def register_serial_number(serial_number: str, computer_id: int,
+                           mapping_path: str = "mac_mapping.json") -> bool:
+    """
+    注册新的系统序列号到computer_id的映射关系
+    
+    注意：与MAC地址映射共用同一个映射文件（mac_mapping.json），
+    键只是从MAC地址扩展为“标识字符串”（此处为系统序列号）。
+    
+    Args:
+        serial_number: 系统序列号（如 "K6X46XLL9C"）
+        computer_id: 电脑编号 (1-9)
+        mapping_path: 映射表文件路径
+        
+    Returns:
+        bool: 是否注册成功
+        
+    Raises:
+        ValueError: 如果参数无效或发生冲突
+    """
+    # 验证computer_id范围
+    if not (1 <= computer_id <= 9):
+        raise ValueError(f"错误: computer_id必须在1-9之间，当前值: {computer_id}")
+    
+    serial_clean = serial_number.strip()
+    if not serial_clean:
+        raise ValueError("错误: 系统序列号不能为空")
+    
+    # 加载映射表（不验证hash，因为我们要修改它）
+    mac_mapping = load_mac_mapping(mapping_path, verify_hash=False)
+    
+    # 检查序列号是否已存在
+    if serial_clean in mac_mapping:
+        existing_id = mac_mapping[serial_clean]
+        if existing_id == computer_id:
+            print(f"✓ 系统序列号 {serial_clean} 已存在，映射到 computer_id={computer_id}")
+            return True
+        else:
+            raise ValueError(
+                f"错误: 系统序列号 {serial_clean} 已存在，但映射到不同的computer_id: {existing_id}\n"
+                f"   无法修改为 {computer_id}。如需修改，请先手动编辑映射表文件。"
+            )
+    
+    # 检查computer_id是否已被其他标识使用（包括MAC或其他序列号）
+    for key, cid in mac_mapping.items():
+        if cid == computer_id:
+            raise ValueError(
+                f"错误: computer_id {computer_id} 已被标识 {key} 使用。\n"
+                f"   每个computer_id只能映射到一个标识。"
+            )
+    
+    # 添加新映射
+    mac_mapping[serial_clean] = computer_id
+    
+    # 保存映射表（会自动更新hash）
+    if save_mac_mapping(mac_mapping, mapping_path):
+        print(f"✓ 系统序列号 {serial_clean} 已成功注册，映射到 computer_id={computer_id}")
+        print(f"  映射表hash已自动更新")
+        return True
+    else:
+        print(f"✗ 保存映射表失败")
+        return False
+
+
 def reset_sequence(config_path: str = "sn_config.json") -> bool:
     """
     重置当前周的序列号（谨慎使用）
@@ -1661,6 +1822,7 @@ def main():
     parser.add_argument('--status', '-s', action='store_true', help='显示当前状态（电脑编号、序列号、下一个SN等）')
     parser.add_argument('--register-mac', type=str, metavar='MAC', help='注册新的MAC地址映射（需配合--computer-id使用）')
     parser.add_argument('--unregister-mac', type=str, metavar='MAC', help='删除MAC地址映射（管理员操作）')
+    parser.add_argument('--register-serial', type=str, metavar='SERIAL', help='注册新的系统序列号映射（需配合--computer-id使用）')
     parser.add_argument('--computer-id', type=int, metavar='ID', help='电脑编号 (1-9)，仅用于--register-mac命令')
     parser.add_argument('--reset', action='store_true', help='重置当前周的序列号（谨慎使用）')
     parser.add_argument('--update-status', type=str, metavar='STATUS', help='更新序列号状态: occupied/failed/pending（需配合--sn使用）')
@@ -1704,6 +1866,22 @@ def main():
             return 1
         except Exception as e:
             print(f"错误: 删除MAC地址映射失败: {e}")
+            return 1
+    
+    if args.register_serial is not None:
+        if args.computer_id is None:
+            print("错误: 使用 --register-serial 时必须指定 --computer-id")
+            return 1
+        try:
+            if register_serial_number(args.register_serial, args.computer_id, args.mapping):
+                return 0
+            else:
+                return 1
+        except ValueError as e:
+            print(f"错误: {e}")
+            return 1
+        except Exception as e:
+            print(f"错误: 注册系统序列号失败: {e}")
             return 1
     
     if args.register_mac is not None:
