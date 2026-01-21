@@ -3,7 +3,7 @@
   "description": "开发模式 - 用于开发和调试，不加密",
   "serial_port": "/dev/cu.wchusbserial210",
   "chip_type": "esp32c2",
-  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_12.bin",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_13.bin",
   "flash_mode": "dio",
   "flash_freq": "60m",
   "flash_size": "2MB",
@@ -185,6 +185,10 @@
               "extract_pressure": true,
               "extract_rtc": true,
               "monitor_button": true,
+              "firmware_version_check": {
+                "enabled": true,
+                "on_mismatch": "error"
+              },
               "test_states": {
                 "application_mode": {
                   "patterns": [
