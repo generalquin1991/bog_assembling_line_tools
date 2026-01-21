@@ -18,6 +18,7 @@
   "flash_encryption_key": null,
   "flash_encryption_key_file": null,
   "version_string": "P02V02R00",
+  "mode_number": "20065",
   "print_device_logs": true,
   "hash_verification_timeout": 20,
   "filter_serial_ports": true,
