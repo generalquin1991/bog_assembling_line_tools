@@ -5374,11 +5374,12 @@ def execute_test_only(config_state):
                     # Print log line with timestamp
                     ts_print(f"  [日志] {line_clean}")
 
-                    # Firmware/App version check: compare selected firmware version with device-reported App version
+                    # Firmware/App version check: compare selected firmware version with device-reported App/Firmware version
                     if firmware_check_enabled and expected_app_version and not monitored_data.get('actual_app_version'):
-                        app_ver_match = re.search(r'App version:\s*([0-9]+\.[0-9]+\.[0-9]+)', line_clean)
-                        if app_ver_match:
-                            actual_app_version = app_ver_match.group(1).strip()
+                        # Support both "App version: X.Y.Z" and "Firmware Version: X.Y.Z"
+                        ver_match = re.search(r'(?:App version|Firmware Version):\s*([0-9]+\.[0-9]+\.[0-9]+)', line_clean, re.IGNORECASE)
+                        if ver_match:
+                            actual_app_version = ver_match.group(1).strip()
                             monitored_data['actual_app_version'] = actual_app_version
                             monitored_data['expected_app_version'] = expected_app_version
                             if actual_app_version == expected_app_version:
