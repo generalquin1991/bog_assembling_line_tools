@@ -1,9 +1,9 @@
 {
   "mode": "factory",
   "description": "生产模式 - 用于量产，支持加密和安全启动",
-  "serial_port": "/dev/cu.wchusbserial2110",
+  "serial_port": "/dev/cu.wchusbserial210",
   "chip_type": "esp32c2",
-  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_8.bin",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_3_13.bin",
   "flash_mode": "dio",
   "flash_freq": "60m",
   "flash_size": "2MB",
@@ -103,6 +103,11 @@
                   "Time passed",
                   "RTC Time now:"
                 ],
+                "rtc_time_set_success": [
+                  "RTC time set to:",
+                  "RTC time set to",
+                  "rtc time set to"
+                ],
                 "pressure_sensor_pass": [
                   "Pressure Sensor Calibration Value Ok",
                   "Pressure Sensor Reading:"
@@ -112,6 +117,23 @@
                   "button to continue",
                   "Press button if",
                   "Press button"
+                ],
+                "button_clicked": [
+                  "Button clicked",
+                  "button clicked",
+                  "Button Clicked"
+                ],
+                "rtc_time_prompt": [
+                  "Enter current date and time",
+                  "Enter current date and time (YYYY-MM-DDTHH:MM:SS):",
+                  "Enter date and time",
+                  "date and time"
+                ],
+                "press_enter_to_continue": [
+                  "Press ENTER to continue",
+                  "Press ENTER to continue...",
+                  "Press Enter to continue",
+                  "Press Enter to continue..."
                 ],
                 "hardware_version_prompt": [
                   "Enter Hardware Version:",
