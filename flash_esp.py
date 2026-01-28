@@ -3522,6 +3522,7 @@ def menu_set_firmware(config_state):
     default_config = load_default_config(config_state.get('config_path', ''))
     default_firmware = default_config.get('firmware_path', '')
     current_firmware = config_state.get('firmware', default_firmware)
+    mode_type = config_state.get('mode')  # 'develop' or 'factory'
     
     # Display current and default values
     print_section_header("Current Configuration", 80)
@@ -3548,6 +3549,33 @@ def menu_set_firmware(config_state):
         # Sort by modification time descending (newest first)
         bin_files_with_time.sort(reverse=True)
         firmware_files = [f for _, f in bin_files_with_time]
+
+    # Filter firmware list according to mode:
+    # - develop mode: only allow version starting with 0 (e.g. CO2ControllerFW_combined_0_x_x.bin)
+    # - factory mode: only allow version starting with 1 (e.g. CO2ControllerFW_combined_1_x_x.bin)
+    filtered_firmware_files = []
+    if firmware_files:
+        for fname in firmware_files:
+            # Extract major version from filename pattern CO2ControllerFW_combined_<major>_...
+            major_version = None
+            parts = fname.split('_')
+            if len(parts) >= 4 and parts[0].startswith('CO2ControllerFW') and parts[1] == 'combined':
+                # parts example: ['CO2ControllerFW', 'combined', '1', '1', '1.bin']
+                major_version = parts[2]
+
+            if mode_type == 'develop':
+                # Only accept major version '0'
+                if major_version == '0':
+                    filtered_firmware_files.append(fname)
+            elif mode_type == 'factory':
+                # Only accept major version '1'
+                if major_version == '1':
+                    filtered_firmware_files.append(fname)
+            else:
+                # Unknown mode, keep all as fallback
+                filtered_firmware_files.append(fname)
+
+        firmware_files = filtered_firmware_files
     
     firmware_choices = []
     
@@ -3560,7 +3588,12 @@ def menu_set_firmware(config_state):
     firmware_choices.append(('Back', 'back'))
     
     if not firmware_choices or firmware_choices == [('Back', 'back')]:
-        print("Warning: No .bin files found in firmware folder")
+        if mode_type == 'develop':
+            print("Warning: No .bin files found in firmware folder matching develop mode (expect version starting with 0)")
+        elif mode_type == 'factory':
+            print("Warning: No .bin files found in firmware folder matching factory mode (expect version starting with 1)")
+        else:
+            print("Warning: No .bin files found in firmware folder")
         return config_state
     
     # Find index of current firmware in list
