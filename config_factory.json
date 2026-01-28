@@ -318,5 +318,6 @@
     }
   ],
   "print_esptool_logs": true,
-  "print_debug_logs": true
+  "print_debug_logs": true,
+  "auto_send_enter": false
 }

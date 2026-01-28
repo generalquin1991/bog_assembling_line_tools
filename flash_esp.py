@@ -2549,6 +2549,14 @@ class ESPFlasher:
     
     def _step_interactive_input(self, step):
         """交互式输入步骤"""
+        step_name = step.get('name', 'interactive_input')
+        
+        # 特殊处理：send_enter_to_continue 步骤不在这里直接发送回车，
+        # 而是统一交给串口监控逻辑根据 auto_send_enter 和用户确认来处理
+        if step_name == 'send_enter_to_continue':
+            print("  步骤 send_enter_to_continue 由串口监控统一处理，不在此处发送数据。")
+            return True
+        
         port = self.config.get('serial_port')
         monitor_baud = self.config.get('monitor_baud')
         if not monitor_baud:
@@ -2558,7 +2566,6 @@ class ESPFlasher:
         config_key = step.get('config_key', '')
         config_files = step.get('config_files', [])
         send_to_device = step.get('send_to_device', False)
-        step_name = step.get('name', 'interactive_input')
         session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         # 检查是否自动发送（不等待用户输入）
@@ -5138,6 +5145,10 @@ def execute_test_only(config_state):
     model_number_refresh_enabled = False  # Flag to enable dynamic model number prompt refresh
     last_model_number_refresh_time = None  # Last time model number prompt was refreshed
     last_model_number_sound_time = None  # Last time sound was played during model number wait
+
+    # Configuration: whether to auto-send ENTER when device prints "Press ENTER to continue"
+    # Default is False if not configured in JSON
+    auto_send_enter = bool(config.get('auto_send_enter', False))
     
     detected_states = set()
     overall_start_time = time.time()
@@ -5857,19 +5868,44 @@ def execute_test_only(config_state):
                                 log_file.flush()
                                 break
                     
-                    # 9. Press ENTER to continue - auto send newline
+                    # 9. Press ENTER to continue - controlled by config/interactive confirmation
                     if not enter_to_continue_sent:
                         enter_patterns = log_patterns.get('press_enter_to_continue', [])
                         for pattern in enter_patterns:
                             if pattern.lower() in line_clean.lower():
-                                # Auto send newline (empty string, send_command will add \n)
-                                time.sleep(0.3)
-                                ser.write('\n'.encode('utf-8'))
-                                ser.flush()
-                                print(f"  \033[32m✓ 已发送换行符 (Press ENTER to continue)\033[0m")
-                                log_file.write(f"[AUTO INPUT] Sent newline for 'Press ENTER to continue'\n")
-                                log_file.flush()
-                                enter_to_continue_sent = True
+                                if auto_send_enter:
+                                    # 自动模式：直接发送回车
+                                    time.sleep(0.3)
+                                    ser.write('\n'.encode('utf-8'))
+                                    ser.flush()
+                                    print(f"  \033[32m✓ 已自动发送换行符 (Press ENTER to continue)\033[0m")
+                                    if log_file:
+                                        log_file.write(f"[AUTO INPUT] Sent newline for 'Press ENTER to continue' (auto_send_enter=True)\n")
+                                        log_file.flush()
+                                    enter_to_continue_sent = True
+                                else:
+                                    # 交互模式：需要用户确认 Y/y 才发送回车
+                                    print("  检测到设备提示: Press ENTER to continue")
+                                    print("  是否发送回车到设备？输入 Y/y 确认，其他任意键或直接回车则不发送。")
+                                    try:
+                                        choice = input("  发送回车到设备？[y/N]: ").strip()
+                                    except (EOFError, KeyboardInterrupt):
+                                        choice = ''
+                                    
+                                    if choice.lower() == 'y':
+                                        time.sleep(0.3)
+                                        ser.write('\n'.encode('utf-8'))
+                                        ser.flush()
+                                        print(f"  \033[32m✓ 用户确认，已发送换行符 (Press ENTER to continue)\033[0m")
+                                        if log_file:
+                                            log_file.write(f"[USER INPUT] User confirmed sending newline for 'Press ENTER to continue'\n")
+                                            log_file.flush()
+                                        enter_to_continue_sent = True
+                                    else:
+                                        print("  \033[33m⚠️ 用户选择不发送回车（Press ENTER to continue）\033[0m")
+                                        if log_file:
+                                            log_file.write(f"[USER INPUT] User declined to send newline for 'Press ENTER to continue'\n")
+                                            log_file.flush()
                                 break
                     
                     # 10. Device tasks started detection (confirm device actually continued)
