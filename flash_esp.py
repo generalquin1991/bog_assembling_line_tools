@@ -2549,6 +2549,14 @@ class ESPFlasher:
     
     def _step_interactive_input(self, step):
         """交互式输入步骤"""
+        step_name = step.get('name', 'interactive_input')
+        
+        # 特殊处理：send_enter_to_continue 步骤不在这里直接发送回车，
+        # 而是统一交给串口监控逻辑根据 auto_send_enter 和用户确认来处理
+        if step_name == 'send_enter_to_continue':
+            print("  步骤 send_enter_to_continue 由串口监控统一处理，不在此处发送数据。")
+            return True
+        
         port = self.config.get('serial_port')
         monitor_baud = self.config.get('monitor_baud')
         if not monitor_baud:
@@ -2558,7 +2566,6 @@ class ESPFlasher:
         config_key = step.get('config_key', '')
         config_files = step.get('config_files', [])
         send_to_device = step.get('send_to_device', False)
-        step_name = step.get('name', 'interactive_input')
         session_id = getattr(self, 'session_id', datetime.now().strftime('%Y%m%d_%H%M%S'))
         
         # 检查是否自动发送（不等待用户输入）
@@ -3515,6 +3522,7 @@ def menu_set_firmware(config_state):
     default_config = load_default_config(config_state.get('config_path', ''))
     default_firmware = default_config.get('firmware_path', '')
     current_firmware = config_state.get('firmware', default_firmware)
+    mode_type = config_state.get('mode')  # 'develop' or 'factory'
     
     # Display current and default values
     print_section_header("Current Configuration", 80)
@@ -3541,6 +3549,33 @@ def menu_set_firmware(config_state):
         # Sort by modification time descending (newest first)
         bin_files_with_time.sort(reverse=True)
         firmware_files = [f for _, f in bin_files_with_time]
+
+    # Filter firmware list according to mode:
+    # - develop mode: only allow version starting with 0 (e.g. CO2ControllerFW_combined_0_x_x.bin)
+    # - factory mode: only allow version starting with 1 (e.g. CO2ControllerFW_combined_1_x_x.bin)
+    filtered_firmware_files = []
+    if firmware_files:
+        for fname in firmware_files:
+            # Extract major version from filename pattern CO2ControllerFW_combined_<major>_...
+            major_version = None
+            parts = fname.split('_')
+            if len(parts) >= 4 and parts[0].startswith('CO2ControllerFW') and parts[1] == 'combined':
+                # parts example: ['CO2ControllerFW', 'combined', '1', '1', '1.bin']
+                major_version = parts[2]
+
+            if mode_type == 'develop':
+                # Only accept major version '0'
+                if major_version == '0':
+                    filtered_firmware_files.append(fname)
+            elif mode_type == 'factory':
+                # Only accept major version '1'
+                if major_version == '1':
+                    filtered_firmware_files.append(fname)
+            else:
+                # Unknown mode, keep all as fallback
+                filtered_firmware_files.append(fname)
+
+        firmware_files = filtered_firmware_files
     
     firmware_choices = []
     
@@ -3553,7 +3588,12 @@ def menu_set_firmware(config_state):
     firmware_choices.append(('Back', 'back'))
     
     if not firmware_choices or firmware_choices == [('Back', 'back')]:
-        print("Warning: No .bin files found in firmware folder")
+        if mode_type == 'develop':
+            print("Warning: No .bin files found in firmware folder matching develop mode (expect version starting with 0)")
+        elif mode_type == 'factory':
+            print("Warning: No .bin files found in firmware folder matching factory mode (expect version starting with 1)")
+        else:
+            print("Warning: No .bin files found in firmware folder")
         return config_state
     
     # Find index of current firmware in list
@@ -4974,6 +5014,8 @@ def execute_test_only(config_state):
     extract_rtc = False
     monitor_button = False
     button_test_timeout = 10.0
+    firmware_check_enabled = False
+    firmware_on_mismatch = 'error'  # 'error' | 'warning' | 'ignore'
     
     # Find test procedure configuration from current config file only
     # Each mode (develop/factory) should have its own procedures defined
@@ -4996,6 +5038,11 @@ def execute_test_only(config_state):
             extract_rtc = reset_step.get('extract_rtc', False)
             monitor_button = reset_step.get('monitor_button', False)
             button_test_timeout = float(reset_step.get('button_test_timeout', 10))
+
+            # Firmware/App version check configuration
+            fw_check_cfg = reset_step.get('firmware_version_check', {})
+            firmware_check_enabled = bool(fw_check_cfg.get('enabled', False))
+            firmware_on_mismatch = str(fw_check_cfg.get('on_mismatch', 'error')).lower()
         
         # Debug: Print configuration status
         if log_patterns or test_states:
@@ -5061,6 +5108,19 @@ def execute_test_only(config_state):
             print(f"  ⚠️  Unable to create log file: {e}")
             log_file = None
     
+    # Derive expected app version from selected firmware file (e.g. CO2ControllerFW_combined_1_0_4.bin -> 1.0.4)
+    selected_firmware = config_state.get('firmware') or config.get('firmware_path')
+    expected_app_version = None
+    if selected_firmware:
+        try:
+            firmware_filename = os.path.basename(selected_firmware)
+            version_match = re.search(r'(\d+)_(\d+)_(\d+)\.bin$', firmware_filename)
+            if version_match:
+                expected_app_version = f"{version_match.group(1)}.{version_match.group(2)}.{version_match.group(3)}"
+        except Exception:
+            # 防御性处理：解析失败不影响主流程
+            expected_app_version = None
+
     # Initialize monitored data
     monitored_data = {
         'mac_address': None,
@@ -5077,7 +5137,12 @@ def execute_test_only(config_state):
         'application_mode_detected': False,
         'encrypted_firmware_detected': False,
         'factory_config_complete': False,
-        'device_tasks_started': False
+        'device_tasks_started': False,
+        # Firmware/App version related fields
+        'selected_firmware': selected_firmware,
+        'expected_app_version': expected_app_version,
+        'actual_app_version': None,
+        'firmware_version_match': None,
     }
     
     # Flags for tracking test progress
@@ -5113,10 +5178,15 @@ def execute_test_only(config_state):
     model_number_refresh_enabled = False  # Flag to enable dynamic model number prompt refresh
     last_model_number_refresh_time = None  # Last time model number prompt was refreshed
     last_model_number_sound_time = None  # Last time sound was played during model number wait
+
+    # Configuration: whether to auto-send ENTER when device prints "Press ENTER to continue"
+    # Default is False if not configured in JSON
+    auto_send_enter = bool(config.get('auto_send_enter', False))
     
     detected_states = set()
     overall_start_time = time.time()
     test_rejected_due_to_app_mode = False  # Flag to indicate test was rejected because device is in application mode
+    firmware_version_mismatch_fatal = False  # Flag for fatal firmware version mismatch
     
     # Log file is already created above, just add debug state info
     if log_file:
@@ -5347,6 +5417,34 @@ def execute_test_only(config_state):
                 if line_clean:
                     # Print log line with timestamp
                     ts_print(f"  [日志] {line_clean}")
+
+                    # Firmware/App version check: compare selected firmware version with device-reported App/Firmware version
+                    if firmware_check_enabled and expected_app_version and not monitored_data.get('actual_app_version'):
+                        # Support both "App version: X.Y.Z" and "Firmware Version: X.Y.Z"
+                        ver_match = re.search(r'(?:App version|Firmware Version):\s*([0-9]+\.[0-9]+\.[0-9]+)', line_clean, re.IGNORECASE)
+                        if ver_match:
+                            actual_app_version = ver_match.group(1).strip()
+                            monitored_data['actual_app_version'] = actual_app_version
+                            monitored_data['expected_app_version'] = expected_app_version
+                            if actual_app_version == expected_app_version:
+                                monitored_data['firmware_version_match'] = True
+                                print(f"  \033[32m✓ 固件版本匹配: 期望 {expected_app_version}, 实际 {actual_app_version}\033[0m")
+                                log_file.write(f"[TEST STATUS] Firmware Version: PASSED (expected {expected_app_version}, actual {actual_app_version})\n")
+                            else:
+                                monitored_data['firmware_version_match'] = False
+                                # Decide behavior based on firmware_on_mismatch policy
+                                if firmware_on_mismatch == 'error':
+                                    firmware_version_mismatch_fatal = True
+                                    print(f"  \033[31m✗ 固件版本不匹配: 期望 {expected_app_version}, 实际 {actual_app_version}，测试立即终止\033[0m")
+                                    log_file.write(f"[TEST STATUS] Firmware Version: FAILED (expected {expected_app_version}, actual {actual_app_version})\n")
+                                    log_file.write("[TEST STATUS] Test aborted due to firmware version mismatch (on_mismatch=error)\n")
+                                elif firmware_on_mismatch == 'warning':
+                                    print(f"  \033[33m⚠️  固件版本不匹配: 期望 {expected_app_version}, 实际 {actual_app_version}\033[0m")
+                                    log_file.write(f"[TEST STATUS] Firmware Version: WARNING (expected {expected_app_version}, actual {actual_app_version})\n")
+                                else:  # 'ignore'
+                                    print(f"  固件版本不匹配: 期望 {expected_app_version}, 实际 {actual_app_version} (已配置为 ignore)\033[0m")
+                                    log_file.write(f"[TEST STATUS] Firmware Version: IGNORED (expected {expected_app_version}, actual {actual_app_version})\n")
+                            log_file.flush()
                     
                     # 0. Application Mode detection (must run before factory mode detection)
                     if not application_mode_detected:
@@ -5803,19 +5901,44 @@ def execute_test_only(config_state):
                                 log_file.flush()
                                 break
                     
-                    # 9. Press ENTER to continue - auto send newline
+                    # 9. Press ENTER to continue - controlled by config/interactive confirmation
                     if not enter_to_continue_sent:
                         enter_patterns = log_patterns.get('press_enter_to_continue', [])
                         for pattern in enter_patterns:
                             if pattern.lower() in line_clean.lower():
-                                # Auto send newline (empty string, send_command will add \n)
-                                time.sleep(0.3)
-                                ser.write('\n'.encode('utf-8'))
-                                ser.flush()
-                                print(f"  \033[32m✓ 已发送换行符 (Press ENTER to continue)\033[0m")
-                                log_file.write(f"[AUTO INPUT] Sent newline for 'Press ENTER to continue'\n")
-                                log_file.flush()
-                                enter_to_continue_sent = True
+                                if auto_send_enter:
+                                    # 自动模式：直接发送回车
+                                    time.sleep(0.3)
+                                    ser.write('\n'.encode('utf-8'))
+                                    ser.flush()
+                                    print(f"  \033[32m✓ 已自动发送换行符 (Press ENTER to continue)\033[0m")
+                                    if log_file:
+                                        log_file.write(f"[AUTO INPUT] Sent newline for 'Press ENTER to continue' (auto_send_enter=True)\n")
+                                        log_file.flush()
+                                    enter_to_continue_sent = True
+                                else:
+                                    # 交互模式：需要用户确认 Y/y 才发送回车
+                                    print("  检测到设备提示: Press ENTER to continue")
+                                    print("  是否发送回车到设备？输入 Y/y 确认，其他任意键或直接回车则不发送。")
+                                    try:
+                                        choice = input("  发送回车到设备？[y/N]: ").strip()
+                                    except (EOFError, KeyboardInterrupt):
+                                        choice = ''
+                                    
+                                    if choice.lower() == 'y':
+                                        time.sleep(0.3)
+                                        ser.write('\n'.encode('utf-8'))
+                                        ser.flush()
+                                        print(f"  \033[32m✓ 用户确认，已发送换行符 (Press ENTER to continue)\033[0m")
+                                        if log_file:
+                                            log_file.write(f"[USER INPUT] User confirmed sending newline for 'Press ENTER to continue'\n")
+                                            log_file.flush()
+                                        enter_to_continue_sent = True
+                                    else:
+                                        print("  \033[33m⚠️ 用户选择不发送回车（Press ENTER to continue）\033[0m")
+                                        if log_file:
+                                            log_file.write(f"[USER INPUT] User declined to send newline for 'Press ENTER to continue'\n")
+                                            log_file.flush()
                                 break
                     
                     # 10. Device tasks started detection (confirm device actually continued)
@@ -5898,8 +6021,8 @@ def execute_test_only(config_state):
                     pass
             
             # If device has been detected as application mode and test should be rejected,
-            # break the main monitoring loop as well (in case we exited only inner loop above)
-            if test_rejected_due_to_app_mode:
+            # or firmware version mismatch is fatal, break the main monitoring loop
+            if test_rejected_due_to_app_mode or firmware_version_mismatch_fatal:
                 break
             
             # Dynamic button prompt refresh (3 times per second = every 333ms)
@@ -6164,6 +6287,25 @@ def execute_test_only(config_state):
             summary_items.append(("工厂模式", "\033[32m✓ 已进入\033[0m"))
         else:
             summary_items.append(("工厂模式", "\033[31m✗ 未检测到\033[0m"))
+
+        # Firmware/App version (only if firmware_check_enabled and expected version is known)
+        expected_version = monitored_data.get('expected_app_version')
+        actual_version = monitored_data.get('actual_app_version')
+        version_match = monitored_data.get('firmware_version_match')
+        if firmware_check_enabled and expected_version:
+            if actual_version:
+                if version_match is True:
+                    summary_items.append(("固件版本", f"\033[32m✓ 匹配: {actual_version} (期望 {expected_version})\033[0m"))
+                elif version_match is False:
+                    # Distinguish between error/warning/ignore via firmware_on_mismatch
+                    if firmware_on_mismatch == 'error':
+                        summary_items.append(("固件版本", f"\033[31m✗ 不匹配: 实际 {actual_version}, 期望 {expected_version}\033[0m"))
+                    elif firmware_on_mismatch == 'warning':
+                        summary_items.append(("固件版本", f"\033[33m⚠️  不匹配: 实际 {actual_version}, 期望 {expected_version}\033[0m"))
+                    else:
+                        summary_items.append(("固件版本", f"\033[33m(已忽略) 不匹配: 实际 {actual_version}, 期望 {expected_version}\033[0m"))
+            else:
+                summary_items.append(("固件版本", f"\033[31m✗ 未在日志中检测到 App version (期望 {expected_version})\033[0m"))
         
         # Pressure sensor test
         if extract_pressure:
@@ -6225,6 +6367,10 @@ def execute_test_only(config_state):
             summary_items.append(("工厂配置", "\033[32m✓ 完成\033[0m"))
         else:
             summary_items.append(("工厂配置", "\033[31m✗ 未完成\033[0m"))
+
+        # If firmware version mismatch is fatal, add an explicit summary line
+        if firmware_check_enabled and firmware_on_mismatch == 'error' and monitored_data.get('expected_app_version') and monitored_data.get('firmware_version_match') is False:
+            summary_items.append(("固件版本错误", "\033[31m✗ 版本不匹配（测试已被中止）\033[0m"))
         
         if summary_items:
             for label, value in summary_items:
@@ -6244,6 +6390,12 @@ def execute_test_only(config_state):
         total_tests += 1  # Factory mode
         if monitored_data.get('factory_mode_detected'):
             passed_tests += 1
+
+        # Firmware/App version consistency
+        if firmware_check_enabled and monitored_data.get('expected_app_version'):
+            total_tests += 1
+            if monitored_data.get('firmware_version_match'):
+                passed_tests += 1
         
         if extract_pressure:
             total_tests += 1

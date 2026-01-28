@@ -39,3 +39,5 @@ sn_config.json
 local_data/
 all_sn_logs.json
 *.protected
+
+firmware/
