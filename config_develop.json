@@ -1,7 +1,7 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.wchusbserial120",
+  "serial_port": "/dev/cu.usbserial-120",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
   "flash_mode": "dio",
