@@ -1,9 +1,9 @@
 {
   "mode": "factory",
   "description": "生产模式 - 用于量产，支持加密和安全启动",
-  "serial_port": "/dev/cu.wchusbserial120",
+  "serial_port": "/dev/cu.usbserial-120",
   "chip_type": "esp32c2",
-  "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
+  "firmware_path": "firmware/CO2ControllerFW_combined_1_1_1.bin",
   "flash_mode": "dio",
   "flash_freq": "60m",
   "flash_size": "2MB",
@@ -319,5 +319,5 @@
   ],
   "print_esptool_logs": true,
   "print_debug_logs": true,
-  "auto_send_enter": false
+  "auto_send_enter": true
 }
