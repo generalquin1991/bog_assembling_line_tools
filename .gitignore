@@ -17,9 +17,11 @@ ENV/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
+pairing
 
 # OS
 .DS_Store
