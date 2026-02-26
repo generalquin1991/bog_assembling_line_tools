@@ -1,0 +1,470 @@
+[日志] !
+  [日志] =m[0m
+  [日志] I (499) main: Initializing I2C bus
+  [日志] W (509) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+  [日志] I (539) main: Initializing NVM
+  [日志] I (539) main: Initializing RTOS queus, events, sempahores
+  [日志] I (549) factory_config: ==============================
+  📋 进入工厂配置模式
+  [日志] I (559) factory_config: Factory Configuration Mode
+  [日志] I (569) factory_config: ==============================
+  [日志] Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+  [日志] Core  0 register dump:
+  [日志] MEPC    : 0x42011692  RA      : 0x420116cc  SP      : 0x3fcbc1f0  GP      : 0x3fcb6690
+  [日志] TP      : 0x3fcbc3d0  T0      : 0x40081260  T1      : 0x0000000f  T2      : 0xffffffff
+  [日志] S0/FP   : 0x00000000  S1      : 0x00000003  A0      : 0x00000000  A1      : 0x3fcbc253
+  [日志] A2      : 0x00000005  A3      : 0x00000004  A4      : 0x00000000  A5      : 0x00000000
+  [日志] A6      : 0x0000000f  A7      : 0x00000010  S2      : 0x3c065000  S3      : 0x3fcbc253
+  [日志] S4      : 0x00000000  S5      : 0x00000000  S6      : 0x00000000  S7      : 0x00000000
+  [日志] S8      : 0x00000000  S9      : 0x00000000  S10     : 0x00000000  S11     : 0x00000000
+  [日志] T3      : 0xffffffff  T4      : 0xffffffff  T5      : 0xffffffff  T6      : 0xffffffff
+  [日志] MSTATUS : 0x00001881  MTVEC   : 0x40380001  MCAUSE  : 0x00000005  MTVAL   : 0x00000044
+  [日志] MHARTID : 0x00000000
+  [日志] Stack memory:
+  [日志] 3fcbc1f0: 0x7fffffff 0x00000003 0x3fcbc208 0x420116cc 0x3fcba10c 0x00000003 0x00000000 0x42011492
+  [日志] 3fcbc210: 0x00000000 0x00000000 0x00000000 0x00000000 0x3c065000 0x00000003 0x00000000 0x4200fcde
+  [日志] 3fcbc230: 0x3c063331 0x00000000 0x3fcdd7cc 0x40386064 0x00000000 0x00000000 0x00000000 0x3fcdea24
+  [日志] 3fcbc250: 0x00000000 0x00000000 0x3fcd0000 0x00000000 0x00000004 0x00000045 0x3f302073 0x4204258e
+  [日志] 3fcbc270: 0x00000001 0x00000000 0x3fcdd824 0x3c06e078 0x00000000 0x00000001 0x3fcb97c0 0x403811a6
+  [日志] 3fcbc290: 0x3fcbc2d8 0x00000000 0x3fcdd824 0x42042d98 0x00000000 0x3c064020 0x00001102 0x40381248
+  [日志] 3fcbc2b0: 0x00000000 0x00000000 0x3fcbc31c 0x42043010 0x00000000 0x3c064020 0x00000000 0x4203fb9e
+  [日志] 3fcbc2d0: 0x00000000 0x00000003 0x3fcb89dc 0x403862bc 0x00000000 0x00000003 0x00000000 0x00000000
+  [日志] 3fcbc2f0: 0x00000000 0x00000003 0x3c062000 0x4203fc0a 0x00000000 0x00000003 0x3c062000 0x4201086c
+  [日志] 3fcbc310: 0x00000007 0x00000003 0x00000000 0x420095c8 0x00000000 0x00000003 0x3c062000 0x42009c02
+  [日志] 3fcbc330: 0x00000000 0x3fcbc36c 0x3c0619a8 0x4038bb04 0x00000000 0x00000000 0x00000000 0x3fcbc36c
+  [日志] 3fcbc350: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc370: 0x00000000 0x00000003 0x3c062000 0x4205a4be 0x00000000 0x00001388 0x00000001 0x00000000
+  [日志] 3fcbc390: 0x00000000 0x00000000 0x00000000 0x403870f0 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc3b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc3d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0x00000174 0x3fcbc150 0x00000000 0x3fcb7fec
+  [日志] 3fcbc3f0: 0x3fcb7fec 0x3fcbc3e4 0x3fcb7fe4 0x00000018 0x00000000 0x00000000 0x3fcbc3e4 0x00000000
+  [日志] 3fcbc410: 0x00000001 0x3fcbb5e0 0x6e69616d 0x00000000 0x00000000 0x00000000 0x3fcbc3d0 0x00000001
+  [日志] 3fcbc430: 0x00000000 0x00000000 0x00000000 0x00000000 0x3fcba0a4 0x3fcba10c 0x3fcba174 0x00000000
+  [日志] 3fcbc450: 0x00000000 0x00000001 0x00000000 0x00000000 0x00000000 0x42003f7c 0x00000000 0x00000000
+  [日志] 3fcbc470: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc490: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4d0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4f0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc510: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc530: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc550: 0x00000000 0x00000000 0x00000600 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc570: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc590: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5b0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] ELF file SHA256: 0025b5ba8
+  [日志] Rebooting...
+  [日志] ESP-ROM:esp32c2-eco4-20240515
+  [日志] Build:May 15 2024
+  [日志] rst:0xc (RTC_SW_CPU_RST),boot:0xe (SPI_FAST_FLASH_BOOT)
+  [日志] Saved PC:0x40385f56
+  [日志] SPIWP:0xee
+  [日志] mode:DIO, clock div:1
+  [日志] load:0x3fcd5c80,len:0x15f0
+  [日志] load:0x403ac370,len:0xba0
+  [日志] load:0x403aeb70,len:0x2b1c
+  [日志] entry 0x403ac37a
+  [日志] I (23) boot: ESP-IDF v5.5.1 2nd stage bootloader
+  [日志] I (23) boot: compile time Jan  5 2026 13:00:41
+  [日志] I (23) boot: chip revision: v2.0
+  [日志] I (23) boot: efuse block revision: v0.1
+  [日志] I (27) boot.esp32c2: MMU Page Size  : 32K
+  [日志] I (30) boot.esp32c2: SPI Speed      : 60MHz
+  [日志] I (34) boot.esp32c2: SPI Mode       : DIO
+  [日志] I (38) boot.esp32c2: SPI Flash Size : 2MB
+  [日志] I (42) boot: Enabling RNG early entropy source...
+  [日志] I (46) boot: Partition Table:
+  [日志] I (49) boot: ## Label            Usage          Type ST Offset   Length
+  [日志] I (55) boot:  0 nvs              WiFi data        01 02 00009000 00004000
+  [日志] I (62) boot:  1 otadata          OTA data         01 00 0000d000 00002000
+  [日志] I (68) boot:  2 phy_init         RF data          01 01 0000f000 00001000
+  [日志] I (75) boot:  3 ota_0            OTA app          00 10 00010000 000e0000
+  [日志] I (81) boot:  4 ota_1            OTA app          00 11 000f0000 000e0000
+  [日志] I (88) boot: End of partition table
+  [日志] I (91) esp_image: segment 0: paddr=00010020 vaddr=3c060020 size=1fb10h (129808) map
+  [日志] I (141) esp_image: segment 1: paddr=0002fb38 vaddr=3fcb47b0 size=0022ch (   556) load
+  [日志] I (141) esp_image: segment 2: paddr=0002fd6c vaddr=3fcb5e90 size=002ach (   684) load
+  [日志] I (145) esp_image: segment 3: paddr=00030020 vaddr=42000020 size=5a9fch (371196) map
+  [日志] I (272) esp_image: segment 4: paddr=0008aa24 vaddr=3fcb613c size=01c84h (  7300) load
+  [日志] I (275) esp_image: segment 5: paddr=0008c6b0 vaddr=40380000 size=0e868h ( 59496) load
+  [日志] I (298) esp_image: segment 6: paddr=0009af20 vaddr=4038e870 size=05f40h ( 24384) load
+  [日志] I (318) boot: Loaded app from partition at offset 0x10000
+  [日志] I (319) boot: Disabling RNG early entropy source...
+  [日志] I (329) cpu_start: Unicore app
+  [日志] I (519) cpu_start: Pro cpu start user code
+  [日志] I (519) cpu_start: cpu freq: 120000000 Hz
+  [日志] I (519) app_init: Application information:
+  [日志] I (523) app_init: Project name:     CO2ControllerFW
+  [日志] I (532) app_init: App version:      0.3.8_draft
+  [日志] I (540) app_init: Compile time:     Jan  5 2026 13:00:21
+  [日志] I (549) app_init: ELF file SHA256:  0025b5ba8...
+  [日志] I (557) app_init: ESP-IDF:          v5.5.1
+  [日志] I (565) efuse_init: Min chip rev:     v1.1
+  [日志] I (572) efuse_init: Max chip rev:     v2.99
+  [日志] I (580) efuse_init: Chip rev:         v2.0
+  [日志] I (587) heap_init: Initializing. RAM available for dynamic allocation:
+  [日志] I (598) heap_init: At 3FCB9830 len 00023340 (140 KiB): RAM
+  [日志] I (607) heap_init: At 3FCDCB70 len 00002820 (10 KiB): RAM
+  [日志] I (618) spi_flash: detected chip: generic
+  [日志] I (624) spi_flash: flash io: dio
+  [日志] I (630) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+  [日志] I (641) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+  [日志] I (653) coexist: coex firmware version: b0bcc39
+  [日志] I (661) coexist: coexist rom version de8c800
+  [日志] I (669) main_task: Started on CPU0
+  [日志] I (669) main_task: Calling app_main()
+  [日志] I (679) main: Initializing GPIO
+  [日志] I (679) main: Initializing I2C bus
+  [日志] W (689) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+  [日志] I (719) main: Initializing NVM
+  [日志] I (719) main: Initializing RTOS queus, events, sempahores
+  [日志] I (729) factory_config: ==============================
+  [日志] I (739) factory_config: Factory Configuration Mode
+  [日志] I (749) factory_config: ==============================
+  [日志] Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+  [日志] Core  0 register dump:
+  [日志] MEPC    : 0x42011692  RA      : 0x420116cc  SP      : 0x3fcbc1f0  GP      : 0x3fcb6690
+  [日志] TP      : 0x3fcbc3d0  T0      : 0x40081260  T1      : 0x0000000f  T2      : 0xffffffff
+  [日志] S0/FP   : 0x00000000  S1      : 0x00000003  A0      : 0x00000000  A1      : 0x3fcbc253
+  [日志] A2      : 0x00000005  A3      : 0x00000004  A4      : 0x00000000  A5      : 0x00000000
+  [日志] A6      : 0x0000000f  A7      : 0x00000010  S2      : 0x3c065000  S3      : 0x3fcbc253
+  [日志] S4      : 0x00000000  S5      : 0x00000000  S6      : 0x00000000  S7      : 0x00000000
+  [日志] S8      : 0x00000000  S9      : 0x00000000  S10     : 0x00000000  S11     : 0x00000000
+  [日志] T3      : 0xffffffff  T4      : 0xffffffff  T5      : 0xffffffff  T6      : 0xffffffff
+  [日志] MSTATUS : 0x00001881  MTVEC   : 0x40380001  MCAUSE  : 0x00000005  MTVAL   : 0x00000044
+  [日志] MHARTID : 0x00000000
+  [日志] Stack memory:
+  [日志] 3fcbc1f0: 0x7fffffff 0x00000003 0x3fcbc208 0x420116cc 0x3fcba10c 0x00000003 0x00000000 0x42011492
+  [日志] 3fcbc210: 0x00000000 0x00000000 0x00000000 0x00000000 0x3c065000 0x00000003 0x00000000 0x4200fcde
+  [日志] 3fcbc230: 0x3c063331 0x00000000 0x3fcdd7cc 0x40386064 0x00000000 0x00000000 0x00000000 0x3fcdea24
+  [日志] 3fcbc250: 0x00000000 0x00000000 0x3fcd0000 0x00000000 0x00000004 0x00000045 0x3f302073 0x4204258e
+  [日志] 3fcbc270: 0x00000001 0x00000000 0x3fcdd824 0x3c06e078 0x00000000 0x00000001 0x3fcb97c0 0x403811a6
+  [日志] 3fcbc290: 0x3fcbc2d8 0x00000000 0x3fcdd824 0x42042d98 0x00000000 0x3c064020 0x00001102 0x40381248
+  [日志] 3fcbc2b0: 0x00000000 0x00000000 0x3fcbc31c 0x42043010 0x00000000 0x3c064020 0x00000000 0x4203fb9e
+  [日志] 3fcbc2d0: 0x00000000 0x00000003 0x3fcb89dc 0x403862bc 0x00000000 0x00000003 0x00000000 0x00000000
+  [日志] 3fcbc2f0: 0x00000000 0x00000003 0x3c062000 0x4203fc0a 0x00000000 0x00000003 0x3c062000 0x4201086c
+  [日志] 3fcbc310: 0x00000007 0x00000003 0x00000000 0x420095c8 0x00000000 0x00000003 0x3c062000 0x42009c02
+  [日志] 3fcbc330: 0x00000000 0x3fcbc36c 0x3c0619a8 0x4038bb04 0x00000000 0x00000000 0x00000000 0x3fcbc36c
+  [日志] 3fcbc350: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc370: 0x00000000 0x00000003 0x3c062000 0x4205a4be 0x00000000 0x00001388 0x00000001 0x00000000
+  [日志] 3fcbc390: 0x00000000 0x00000000 0x00000000 0x403870f0 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc3b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc3d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0x00000174 0x3fcbc150 0x00000000 0x3fcb7fec
+  [日志] 3fcbc3f0: 0x3fcb7fec 0x3fcbc3e4 0x3fcb7fe4 0x00000018 0x00000000 0x00000000 0x3fcbc3e4 0x00000000
+  [日志] 3fcbc410: 0x00000001 0x3fcbb5e0 0x6e69616d 0x00000000 0x00000000 0x00000000 0x3fcbc3d0 0x00000001
+  [日志] 3fcbc430: 0x00000000 0x00000000 0x00000000 0x00000000 0x3fcba0a4 0x3fcba10c 0x3fcba174 0x00000000
+  [日志] 3fcbc450: 0x00000000 0x00000001 0x00000000 0x00000000 0x00000000 0x42003f7c 0x00000000 0x00000000
+  [日志] 3fcbc470: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc490: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4d0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4f0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc510: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc530: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc550: 0x00000000 0x00000000 0x00000600 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc570: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc590: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5b0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] ELF file SHA256: 0025b5ba8
+  [日志] Rebooting...
+  [日志] ESP-ROM:esp32c2-eco4-20240515
+  [日志] Build:May 15 2024
+  [日志] rst:0xc (RTC_SW_CPU_RST),boot:0xe (SPI_FAST_FLASH_BOOT)
+  [日志] Saved PC:0x40385f56
+  [日志] SPIWP:0xee
+  [日志] mode:DIO, clock div:1
+  [日志] load:0x3fcd5c80,len:0x15f0
+  [日志] load:0x403ac370,len:0xba0
+  [日志] load:0x403aeb70,len:0x2b1c
+  [日志] entry 0x403ac37a
+  [日志] I (23) boot: ESP-IDF v5.5.1 2nd stage bootloader
+  [日志] I (23) boot: compile time Jan  5 2026 13:00:41
+  [日志] I (23) boot: chip revision: v2.0
+  [日志] I (23) boot: efuse block revision: v0.1
+  [日志] I (27) boot.esp32c2: MMU Page Size  : 32K
+  [日志] I (30) boot.esp32c2: SPI Speed      : 60MHz
+  [日志] I (34) boot.esp32c2: SPI Mode       : DIO
+  [日志] I (38) boot.esp32c2: SPI Flash Size : 2MB
+  [日志] I (42) boot: Enabling RNG early entropy source...
+  [日志] I (46) boot: Partition Table:
+  [日志] I (49) boot: ## Label            Usage          Type ST Offset   Length
+  [日志] I (55) boot:  0 nvs              WiFi data        01 02 00009000 00004000
+  [日志] I (62) boot:  1 otadata          OTA data         01 00 0000d000 00002000
+  [日志] I (68) boot:  2 phy_init         RF data          01 01 0000f000 00001000
+  [日志] I (75) boot:  3 ota_0            OTA app          00 10 00010000 000e0000
+  [日志] I (81) boot:  4 ota_1            OTA app          00 11 000f0000 000e0000
+  [日志] I (88) boot: End of partition table
+  [日志] I (91) esp_image: segment 0: paddr=00010020 vaddr=3c060020 size=1fb10h (129808) map
+  [日志] I (141) esp_image: segment 1: paddr=0002fb38 vaddr=3fcb47b0 size=0022ch (   556) load
+  [日志] I (141) esp_image: segment 2: paddr=0002fd6c vaddr=3fcb5e90 size=002ach (   684) load
+  [日志] I (145) esp_image: segment 3: paddr=00030020 vaddr=42000020 size=5a9fch (371196) map
+  [日志] I (272) esp_image: segment 4: paddr=0008aa24 vaddr=3fcb613c size=01c84h (  7300) load
+  [日志] I (275) esp_image: segment 5: paddr=0008c6b0 vaddr=40380000 size=0e868h ( 59496) load
+  [日志] I (298) esp_image: segment 6: paddr=0009af20 vaddr=4038e870 size=05f40h ( 24384) load
+  [日志] I (318) boot: Loaded app from partition at offset 0x10000
+  [日志] I (319) boot: Disabling RNG early entropy source...
+  [日志] I (329) cpu_start: Unicore app
+  [日志] I (519) cpu_start: Pro cpu start user code
+  [日志] I (519) cpu_start: cpu freq: 120000000 Hz
+  [日志] I (519) app_init: Application information:
+  [日志] I (523) app_init: Project name:     CO2ControllerFW
+  [日志] I (532) app_init: App version:      0.3.8_draft
+  [日志] I (540) app_init: Compile time:     Jan  5 2026 13:00:21
+  [日志] I (549) app_init: ELF file SHA256:  0025b5ba8...
+  [日志] I (557) app_init: ESP-IDF:          v5.5.1
+  [日志] I (565) efuse_init: Min chip rev:     v1.1
+  [日志] I (572) efuse_init: Max chip rev:     v2.99
+  [日志] I (580) efuse_init: Chip rev:         v2.0
+  [日志] I (587) heap_init: Initializing. RAM available for dynamic allocation:
+  [日志] I (598) heap_init: At 3FCB9830 len 00023340 (140 KiB): RAM
+  [日志] I (607) heap_init: At 3FCDCB70 len 00002820 (10 KiB): RAM
+  [日志] I (618) spi_flash: detected chip: generic
+  [日志] I (624) spi_flash: flash io: dio
+  [日志] I (630) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+  [日志] I (641) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+  [日志] I (653) coexist: coex firmware version: b0bcc39
+  [日志] I (661) coexist: coexist rom version de8c800
+  [日志] I (669) main_task: Started on CPU0
+  [日志] I (669) main_task: Calling app_main()
+  [日志] I (679) main: Initializing GPIO
+  [日志] I (679) main: Initializing I2C bus
+  [日志] W (689) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+  [日志] I (719) main: Initializing NVM
+  [日志] I (719) main: Initializing RTOS queus, events, sempahores
+  [日志] I (729) factory_config: ==============================
+  [日志] I (739) factory_config: Factory Configuration Mode
+  [日志] I (749) factory_config: ==============================
+  [日志] Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+  [日志] Core  0 register dump:
+  [日志] MEPC    : 0x42011692  RA      : 0x420116cc  SP      : 0x3fcbc1f0  GP      : 0x3fcb6690
+  [日志] TP      : 0x3fcbc3d0  T0      : 0x40081260  T1      : 0x0000000f  T2      : 0xffffffff
+  [日志] S0/FP   : 0x00000000  S1      : 0x00000003  A0      : 0x00000000  A1      : 0x3fcbc253
+  [日志] A2      : 0x00000005  A3      : 0x00000004  A4      : 0x00000000  A5      : 0x00000000
+  [日志] A6      : 0x0000000f  A7      : 0x00000010  S2      : 0x3c065000  S3      : 0x3fcbc253
+  [日志] S4      : 0x00000000  S5      : 0x00000000  S6      : 0x00000000  S7      : 0x00000000
+  [日志] S8      : 0x00000000  S9      : 0x00000000  S10     : 0x00000000  S11     : 0x00000000
+  [日志] T3      : 0xffffffff  T4      : 0xffffffff  T5      : 0xffffffff  T6      : 0xffffffff
+  [日志] MSTATUS : 0x00001881  MTVEC   : 0x40380001  MCAUSE  : 0x00000005  MTVAL   : 0x00000044
+  [日志] MHARTID : 0x00000000
+  [日志] Stack memory:
+  [日志] 3fcbc1f0: 0x7fffffff 0x00000003 0x3fcbc208 0x420116cc 0x3fcba10c 0x00000003 0x00000000 0x42011492
+  [日志] 3fcbc210: 0x00000000 0x00000000 0x00000000 0x00000000 0x3c065000 0x00000003 0x00000000 0x4200fcde
+  [日志] 3fcbc230: 0x3c063331 0x00000000 0x3fcdd7cc 0x40386064 0x00000000 0x00000000 0x00000000 0x3fcdea24
+  [日志] 3fcbc250: 0x00000000 0x00000000 0x3fcd0000 0x00000000 0x00000004 0x00000045 0x3f302073 0x4204258e
+  [日志] 3fcbc270: 0x00000001 0x00000000 0x3fcdd824 0x3c06e078 0x00000000 0x00000001 0x3fcb97c0 0x403811a6
+  [日志] 3fcbc290: 0x3fcbc2d8 0x00000000 0x3fcdd824 0x42042d98 0x00000000 0x3c064020 0x00001102 0x40381248
+  [日志] 3fcbc2b0: 0x00000000 0x00000000 0x3fcbc31c 0x42043010 0x00000000 0x3c064020 0x00000000 0x4203fb9e
+  [日志] 3fcbc2d0: 0x00000000 0x00000003 0x3fcb89dc 0x403862bc 0x00000000 0x00000003 0x00000000 0x00000000
+  [日志] 3fcbc2f0: 0x00000000 0x00000003 0x3c062000 0x4203fc0a 0x00000000 0x00000003 0x3c062000 0x4201086c
+  [日志] 3fcbc310: 0x00000007 0x00000003 0x00000000 0x420095c8 0x00000000 0x00000003 0x3c062000 0x42009c02
+  [日志] 3fcbc330: 0x00000000 0x3fcbc36c 0x3c0619a8 0x4038bb04 0x00000000 0x00000000 0x00000000 0x3fcbc36c
+  [日志] 3fcbc350: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc370: 0x00000000 0x00000003 0x3c062000 0x4205a4be 0x00000000 0x00001388 0x00000001 0x00000000
+  [日志] 3fcbc390: 0x00000000 0x00000000 0x00000000 0x403870f0 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc3b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc3d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0x00000174 0x3fcbc150 0x00000000 0x3fcb7fec
+  [日志] 3fcbc3f0: 0x3fcb7fec 0x3fcbc3e4 0x3fcb7fe4 0x00000018 0x00000000 0x00000000 0x3fcbc3e4 0x00000000
+  [日志] 3fcbc410: 0x00000001 0x3fcbb5e0 0x6e69616d 0x00000000 0x00000000 0x00000000 0x3fcbc3d0 0x00000001
+  [日志] 3fcbc430: 0x00000000 0x00000000 0x00000000 0x00000000 0x3fcba0a4 0x3fcba10c 0x3fcba174 0x00000000
+  [日志] 3fcbc450: 0x00000000 0x00000001 0x00000000 0x00000000 0x00000000 0x42003f7c 0x00000000 0x00000000
+  [日志] 3fcbc470: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc490: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4d0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4f0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc510: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc530: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc550: 0x00000000 0x00000000 0x00000600 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc570: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc590: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5b0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] ELF file SHA256: 0025b5ba8
+  [日志] Rebooting...
+  [日志] ESP-ROM:esp32c2-eco4-20240515
+  [日志] Build:May 15 2024
+  [日志] rst:0xc (RTC_SW_CPU_RST),boot:0xe (SPI_FAST_FLASH_BOOT)
+  [日志] Saved PC:0x40385f56
+  [日志] SPIWP:0xee
+  [日志] mode:DIO, clock div:1
+  [日志] load:0x3fcd5c80,len:0x15f0
+  [日志] load:0x403ac370,len:0xba0
+  [日志] load:0x403aeb70,len:0x2b1c
+  [日志] entry 0x403ac37a
+  [日志] I (23) boot: ESP-IDF v5.5.1 2nd stage bootloader
+  [日志] I (23) boot: compile time Jan  5 2026 13:00:41
+  [日志] I (23) boot: chip revision: v2.0
+  [日志] I (23) boot: efuse block revision: v0.1
+  [日志] I (27) boot.esp32c2: MMU Page Size  : 32K
+  [日志] I (30) boot.esp32c2: SPI Speed      : 60MHz
+  [日志] I (34) boot.esp32c2: SPI Mode       : DIO
+  [日志] I (38) boot.esp32c2: SPI Flash Size : 2MB
+  [日志] I (42) boot: Enabling RNG early entropy source...
+  [日志] I (46) boot: Partition Table:
+  [日志] I (49) boot: ## Label            Usage          Type ST Offset   Length
+  [日志] I (55) boot:  0 nvs              WiFi data        01 02 00009000 00004000
+  [日志] I (62) boot:  1 otadata          OTA data         01 00 0000d000 00002000
+  [日志] I (68) boot:  2 phy_init         RF data          01 01 0000f000 00001000
+  [日志] I (75) boot:  3 ota_0            OTA app          00 10 00010000 000e0000
+  [日志] I (81) boot:  4 ota_1            OTA app          00 11 000f0000 000e0000
+  [日志] I (88) boot: End of partition table
+  [日志] I (91) esp_image: segment 0: paddr=00010020 vaddr=3c060020 size=1fb10h (129808) map
+  [日志] I (141) esp_image: segment 1: paddr=0002fb38 vaddr=3fcb47b0 size=0022ch (   556) load
+  [日志] I (141) esp_image: segment 2: paddr=0002fd6c vaddr=3fcb5e90 size=002ach (   684) load
+  [日志] I (145) esp_image: segment 3: paddr=00030020 vaddr=42000020 size=5a9fch (371196) map
+  [日志] I (272) esp_image: segment 4: paddr=0008aa24 vaddr=3fcb613c size=01c84h (  7300) load
+  [日志] I (275) esp_image: segment 5: paddr=0008c6b0 vaddr=40380000 size=0e868h ( 59496) load
+  [日志] I (298) esp_image: segment 6: paddr=0009af20 vaddr=4038e870 size=05f40h ( 24384) load
+  [日志] I (318) boot: Loaded app from partition at offset 0x10000
+  [日志] I (319) boot: Disabling RNG early entropy source...
+  [日志] I (329) cpu_start: Unicore app
+  [日志] I (519) cpu_start: Pro cpu start user code
+  [日志] I (519) cpu_start: cpu freq: 120000000 Hz
+  [日志] I (519) app_init: Application information:
+  [日志] I (523) app_init: Project name:     CO2ControllerFW
+  [日志] I (532) app_init: App version:      0.3.8_draft
+  [日志] I (540) app_init: Compile time:     Jan  5 2026 13:00:21
+  [日志] I (549) app_init: ELF file SHA256:  0025b5ba8...
+  [日志] I (557) app_init: ESP-IDF:          v5.5.1
+  [日志] I (565) efuse_init: Min chip rev:     v1.1
+  [日志] I (572) efuse_init: Max chip rev:     v2.99
+  [日志] I (580) efuse_init: Chip rev:         v2.0
+  [日志] I (587) heap_init: Initializing. RAM available for dynamic allocation:
+  [日志] I (598) heap_init: At 3FCB9830 len 00023340 (140 KiB): RAM
+  [日志] I (607) heap_init: At 3FCDCB70 len 00002820 (10 KiB): RAM
+  [日志] I (618) spi_flash: detected chip: generic
+  [日志] I (624) spi_flash: flash io: dio
+  [日志] I (630) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+  [日志] I (641) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+  [日志] I (653) coexist: coex firmware version: b0bcc39
+  [日志] I (661) coexist: coexist rom version de8c800
+  [日志] I (669) main_task: Started on CPU0
+  [日志] I (669) main_task: Calling app_main()
+  [日志] I (679) main: Initializing GPIO
+  [日志] I (679) main: Initializing I2C bus
+  [日志] W (689) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+  [日志] I (719) main: Initializing NVM
+  [日志] I (719) main: Initializing RTOS queus, events, sempahores
+  [日志] I (729) factory_config: ==============================
+  [日志] I (739) factory_config: Factory Configuration Mode
+  [日志] I (749) factory_config: ==============================
+  [日志] Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+  [日志] Core  0 register dump:
+  [日志] MEPC    : 0x42011692  RA      : 0x420116cc  SP      : 0x3fcbc1f0  GP      : 0x3fcb6690
+  [日志] TP      : 0x3fcbc3d0  T0      : 0x40081260  T1      : 0x0000000f  T2      : 0xffffffff
+  [日志] S0/FP   : 0x00000000  S1      : 0x00000003  A0      : 0x00000000  A1      : 0x3fcbc253
+  [日志] A2      : 0x00000005  A3      : 0x00000004  A4      : 0x00000000  A5      : 0x00000000
+  [日志] A6      : 0x0000000f  A7      : 0x00000010  S2      : 0x3c065000  S3      : 0x3fcbc253
+  [日志] S4      : 0x00000000  S5      : 0x00000000  S6      : 0x00000000  S7      : 0x00000000
+  [日志] S8      : 0x00000000  S9      : 0x00000000  S10     : 0x00000000  S11     : 0x00000000
+  [日志] T3      : 0xffffffff  T4      : 0xffffffff  T5      : 0xffffffff  T6      : 0xffffffff
+  [日志] MSTATUS : 0x00001881  MTVEC   : 0x40380001  MCAUSE  : 0x00000005  MTVAL   : 0x00000044
+  [日志] MHARTID : 0x00000000
+  [日志] Stack memory:
+  [日志] 3fcbc1f0: 0x7fffffff 0x00000003 0x3fcbc208 0x420116cc 0x3fcba10c 0x00000003 0x00000000 0x42011492
+  [日志] 3fcbc210: 0x00000000 0x00000000 0x00000000 0x00000000 0x3c065000 0x00000003 0x00000000 0x4200fcde
+  [日志] 3fcbc230: 0x3c063331 0x00000000 0x3fcdd7cc 0x40386064 0x00000000 0x00000000 0x00000000 0x3fcdea24
+  [日志] 3fcbc250: 0x00000000 0x00000000 0x3fcd0000 0x00000000 0x00000004 0x00000045 0x3f302073 0x4204258e
+  [日志] 3fcbc270: 0x00000001 0x00000000 0x3fcdd824 0x3c06e078 0x00000000 0x00000001 0x3fcb97c0 0x403811a6
+  [日志] 3fcbc290: 0x3fcbc2d8 0x00000000 0x3fcdd824 0x42042d98 0x00000000 0x3c064020 0x00001102 0x40381248
+  [日志] 3fcbc2b0: 0x00000000 0x00000000 0x3fcbc31c 0x42043010 0x00000000 0x3c064020 0x00000000 0x4203fb9e
+  [日志] 3fcbc2d0: 0x00000000 0x00000003 0x3fcb89dc 0x403862bc 0x00000000 0x00000003 0x00000000 0x00000000
+  [日志] 3fcbc2f0: 0x00000000 0x00000003 0x3c062000 0x4203fc0a 0x00000000 0x00000003 0x3c062000 0x4201086c
+  [日志] 3fcbc310: 0x00000007 0x00000003 0x00000000 0x420095c8 0x00000000 0x00000003 0x3c062000 0x42009c02
+  [日志] 3fcbc330: 0x00000000 0x3fcbc36c 0x3c0619a8 0x4038bb04 0x00000000 0x00000000 0x00000000 0x3fcbc36c
+  [日志] 3fcbc350: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc370: 0x00000000 0x00000003 0x3c062000 0x4205a4be 0x00000000 0x00001388 0x00000001 0x00000000
+  [日志] 3fcbc390: 0x00000000 0x00000000 0x00000000 0x403870f0 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc3b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc3d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0x00000174 0x3fcbc150 0x00000000 0x3fcb7fec
+  [日志] 3fcbc3f0: 0x3fcb7fec 0x3fcbc3e4 0x3fcb7fe4 0x00000018 0x00000000 0x00000000 0x3fcbc3e4 0x00000000
+  [日志] 3fcbc410: 0x00000001 0x3fcbb5e0 0x6e69616d 0x00000000 0x00000000 0x00000000 0x3fcbc3d0 0x00000001
+  [日志] 3fcbc430: 0x00000000 0x00000000 0x00000000 0x00000000 0x3fcba0a4 0x3fcba10c 0x3fcba174 0x00000000
+  [日志] 3fcbc450: 0x00000000 0x00000001 0x00000000 0x00000000 0x00000000 0x42003f7c 0x00000000 0x00000000
+  [日志] 3fcbc470: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc490: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4b0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4d0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc4f0: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc510: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc530: 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+  [日志] 3fcbc550: 0x00000000 0x00000000 0x00000600 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc570: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc590: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5b0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] 3fcbc5d0: 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5 0xa5a5a5a5
+  [日志] ELF file SHA256: 0025b5ba8
+  [日志] Rebooting...
+  [日志] ESP-ROM:esp32c2-eco4-20240515
+  [日志] Build:May 15 2024
+  [日志] rst:0xc (RTC_SW_CPU_RST),boot:0xe (SPI_FAST_FLASH_BOOT)
+  [日志] Saved PC:0x40385f56
+  [日志] SPIWP:0xee
+  [日志] mode:DIO, clock div:1
+  [日志] load:0x3fcd5c80,len:0x15f0
+  [日志] load:0x403ac370,len:0xba0
+  [日志] load:0x403aeb70,len:0x2b1c
+  [日志] entry 0x403ac37a
+  [日志] I (23) boot: ESP-IDF v5.5.1 2nd stage bootloader
+  [日志] I (23) boot: compile time Jan  5 2026 13:00:41
+  [日志] I (23) boot: chip revision: v2.0
+  [日志] I (23) boot: efuse block revision: v0.1
+  [日志] I (27) boot.esp32c2: MMU Page Size  : 32K
+  [日志] I (30) boot.esp32c2: SPI Speed      : 60MHz
+  [日志] I (34) boot.esp32c2: SPI Mode       : DIO
+  [日志] I (38) boot.esp32c2: SPI Flash Size : 2MB
+  [日志] I (42) boot: Enabling RNG early entropy source...
+  [日志] I (46) boot: Partition Table:
+  [日志] I (49) boot: ## Label            Usage          Type ST Offset   Length
+  [日志] I (55) boot:  0 nvs              WiFi data        01 02 00009000 00004000
+  [日志] I (62) boot:  1 otadata          OTA data         01 00 0000d000 00002000
+  [日志] I (68) boot:  2 phy_init         RF data          01 01 0000f000 00001000
+  [日志] I (75) boot:  3 ota_0            OTA app          00 10 00010000 000e0000
+  [日志] I (81) boot:  4 ota_1            OTA app          00 11 000f0000 000e0000
+  [日志] I (88) boot: End of partition table
+  [日志] I (91) esp_image: segment 0: paddr=00010020 vaddr=3c060020 size=1fb10h (129808) map
+  [日志] I (141) esp_image: segment 1: paddr=0002fb38 vaddr=3fcb47b0 size=0022ch (   556) load
+  [日志] I (141) esp_image: segment 2: paddr=0002fd6c vaddr=3fcb5e90 size=002ach (   684) load
+  [日志] I (145) esp_image: segment 3: paddr=00030020 vaddr=42000020 size=5a9fch (371196) map
+  [日志] I (272) esp_image: segment 4: paddr=0008aa24 vaddr=3fcb613c size=01c84h (  7300) load
+  [日志] I (275) esp_image: segment 5: paddr=0008c6b0 vaddr=40380000 size=0e868h ( 59496) load
+  [日志] I (298) esp_image: segment 6: paddr=0009af20 vaddr=4038e870 size=05f40h ( 24384) load
+  [日志] I (318) boot: Loaded app from partition at offset 0x10000
+  [日志] I (319) boot: Disabling RNG early entropy source...
+  [日志] I (329) cpu_start: Unicore app
+  [日志] I (519) cpu_start: Pro cpu start user code
+  [日志] I (519) cpu_start: cpu freq: 120000000 Hz
+  [日志] I (519) app_init: Application information:
+  [日志] I (523) app_init: Project name:     CO2ControllerFW
+  [日志] I (532) app_init: App version:      0.3.8_draft
+  [日志] I (540) app_init: Compile time:     Jan  5 2026 13:00:21
+  [日志] I (549) app_init: ELF file SHA256:  0025b5ba8...
+  [日志] I (557) app_init: ESP-IDF:          v5.5.1
+  [日志] I (565) efuse_init: Min chip rev:     v1.1
+  [日志] I (572) efuse_init: Max chip rev:     v2.99
+  [日志] I (580) efuse_init: Chip rev:         v2.0
+  [日志] I (587) heap_init: Initializing. RAM available for dynamic allocation:
+  [日志] I (598) heap_init: At 3FCB9830 len 00023340 (140 KiB): RAM
+  [日志] I (607) heap_init: At 3FCDCB70 len 00002820 (10 KiB): RAM
+  [日志] I (618) spi_flash: detected chip: generic
+  [日志] I (624) spi_flash: flash io: dio
+  [日志] I (630) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+  [日志] I (641) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+  [日志] I (653) coexist: coex firmware version: b0bcc39
+  [日志] I (661) coexist: coexist rom version de8c800
+  [日志] I (669) main_task: Started on CPU0
+  [日志] I (669) main_task: Calling app_main()
+  [日志] I (679) main: Initializing GPIO
+  [日志] I (679) main: Initializing I2C bus
+  [日志] W (689) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+  [日志] I (719) main: Initializing NVM
+  [日志] I (719) main: Initializing RTOS queus, events, sempahores
+  [日志] I (729) factory_config: ==============================
+  [日志] I (739) factory_config: Factory Configuration Mode
+  [日志] I (749) factory_config: ==============================
+  [日志] Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+  [日志] Core  0 register dump:
+  [日志] MEPC    : 0x42011692  RA      : 0x420116cc  SP      : 0x3fcbc1f0  GP      : 0x3fcb6690
+  [日志] TP      : 0x3fcbc3d0  T0      : 0x40081260  T1      : 0x0000000f  T2      : 0xffffffff

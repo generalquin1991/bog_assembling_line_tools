@@ -1,0 +1,183 @@
+ESP-ROM:esp8684-api2-20220127
+Build:Jan 27 2022
+rst:0x1 (POWERON),boot:0xe (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fcd5d00,len:0x327c
+load:0x403ac370,len:0xba0
+load:0x403aeb70,len:0x56e8
+entry 0x403ac37a
+I (32) boot: ESP-IDF v5.5.1 2nd stage bootloader
+I (32) boot: compile time Dec 19 2025 15:32:53
+I (32) boot: chip revision: v1.2
+I (32) boot: efuse block revision: v0.1
+I (38) boot.esp32c2: MMU Page Size  : 32K
+I (44) boot.esp32c2: SPI Speed      : 60MHz
+I (50) boot.esp32c2: SPI Mode       : DIO
+I (55) boot.esp32c2: SPI Flash Size : 2MB
+I (61) boot: Enabling RNG early entropy source...
+I (68) boot: Partition Table:
+I (72) boot: ## Label            Usage          Type ST Offset   Length
+I (82) boot:  0 nvs              WiFi data        01 02 00011000 00004000
+I (92) boot:  1 otadata          OTA data         01 00 00015000 00002000
+I (102) boot:  2 phy_init         RF data          01 01 00017000 00001000
+I (112) boot:  3 ota_0            OTA app          00 10 00020000 000e0000
+I (122) boot:  4 ota_1            OTA app          00 11 00100000 000e0000
+I (132) boot: End of partition table
+I (137) boot: No factory image, trying OTA 0
+I (144) esp_image: segment 0: paddr=00020020 vaddr=3c060020 size=20da8h (134568) map
+I (186) esp_image: segment 1: paddr=00040dd0 vaddr=3fcb47c0 size=0022ch (   556) load
+I (186) esp_image: segment 2: paddr=00041004 vaddr=3fcb5ea0 size=01f68h (  8040) load
+I (194) esp_image: segment 3: paddr=00042f74 vaddr=40380000 size=050a4h ( 20644) load
+I (208) esp_image: segment 4: paddr=00048020 vaddr=42000020 size=5cc04h (379908) map
+I (301) esp_image: segment 5: paddr=000a4c2c vaddr=403850a4 size=097dch ( 38876) load
+I (311) esp_image: segment 6: paddr=000ae410 vaddr=4038e880 size=05f40h ( 24384) load
+I (317) esp_image: segment 7: paddr=000b4358 vaddr=00000000 size=03c78h ( 15480) 
+I (322) esp_image: Verifying image signature...
+I (325) secure_boot_v2: Secure boot V2 is not enabled yet and eFuse digest keys are not set
+I (337) secure_boot_v2: Verifying with ECDSA...
+ECDSA I (387) secure_boot_v2: Signature verified successfully!
+I (393) boot: Loaded app from partition at offset 0x20000
+I (394) boot: Set actual ota_seq=1 in otadata[0]
+I (394) efuse: Batch mode of writing fields is enabled
+I (399) secure_boot_v2: enabling secure boot v2...
+I (406) esp_image: segment 0: paddr=00000020 vaddr=3fcd5d00 size=0327ch ( 12924) 
+I (420) esp_image: segment 1: paddr=000032a4 vaddr=403ac370 size=00ba0h (  2976) 
+I (429) esp_image: segment 2: paddr=00003e4c vaddr=403aeb70 size=056e8h ( 22248) 
+I (444) esp_image: Verifying image signature...
+I (446) secure_boot_v2: Secure boot V2 is not enabled yet and eFuse digest keys are not set
+I (458) secure_boot_v2: Verifying with ECDSA...
+ECDSA I (508) secure_boot_v2: Signature verified successfully!
+I (509) secure_boot_v2: Secure boot digests absent, generating..
+I (558) secure_boot_v2: Digests successfully calculated, 1 valid signatures (image offset 0x0)
+I (558) secure_boot_v2: 1 signature block(s) found appended to the bootloader.
+I (564) secure_boot_v2: Burning public key hash to eFuse
+I (572) efuse: Writing EFUSE_BLK_KEY0 with purpose 3
+I (719) secure_boot_v2: Digests successfully calculated, 1 valid signatures (image offset 0x20000)
+I (719) secure_boot_v2: 1 signature block(s) found appended to the app.
+I (724) secure_boot_v2: Application key(0) matches with bootloader key(0).
+I (735) secure_boot_v2: blowing secure boot efuse...
+I (742) secure_boot: Enabling Security download mode...
+I (749) secure_boot: Disable hardware & software JTAG...
+I (757) secure_boot: Prevent read disabling of additional efuses...
+I (766) boot: Checking flash encryption...
+I (772) flash_encrypt: Generating new flash encryption key...
+I (781) efuse: Writing EFUSE_BLK_KEY0 with purpose 2
+I (788) flash_encrypt: Disable UART bootloader encryption...
+I (796) flash_encrypt: Disable UART bootloader cache...
+I (804) flash_encrypt: Disable JTAG...
+I (810) efuse: BURN BLOCK3
+I (819) efuse: BURN BLOCK3 - OK (write block == read block)
+I (821) efuse: BURN BLOCK0
+I (828) efuse: BURN BLOCK0 - OK (write block == read block)
+I (833) efuse: Batch mode. Prepared fields are committed
+I (841) boot: Secure boot permanently enabled
+I (847) esp_image: segment 0: paddr=00000020 vaddr=3fcd5d00 size=0327ch ( 12924) 
+I (861) esp_image: segment 1: paddr=000032a4 vaddr=403ac370 size=00ba0h (  2976) 
+I (870) esp_image: segment 2: paddr=00003e4c vaddr=403aeb70 size=056e8h ( 22248) 
+I (885) esp_image: Verifying image signature...
+I (887) secure_boot_v2: Verifying with ECDSA...
+ECDSA I (937) secure_boot_v2: Signature verified successfully!
+I (1629) flash_encrypt: bootloader encrypted successfully
+I (1684) flash_encrypt: partition table encrypted and loaded successfully
+I (1684) flash_encrypt: Encrypting partition 1 at offset 0x15000 (length 0x2000)...
+I (1794) flash_encrypt: Done encrypting
+I (1794) esp_image: segment 0: paddr=00020020 vaddr=3c060020 size=20da8h (134568) map
+I (1825) esp_image: segment 1: paddr=00040dd0 vaddr=3fcb47c0 size=0022ch (   556) 
+I (1825) esp_image: segment 2: paddr=00041004 vaddr=3fcb5ea0 size=01f68h (  8040) 
+I (1832) esp_image: segment 3: paddr=00042f74 vaddr=40380000 size=050a4h ( 20644) 
+I (1846) esp_image: segment 4: paddr=00048020 vaddr=42000020 size=5cc04h (379908) map
+I (1939) esp_image: segment 5: paddr=000a4c2c vaddr=403850a4 size=097dch ( 38876) 
+I (1948) esp_image: segment 6: paddr=000ae410 vaddr=4038e880 size=05f40h ( 24384) 
+I (1954) esp_image: segment 7: paddr=000b4358 vaddr=00000000 size=03c78h ( 15480) 
+I (1959) esp_image: Verifying image signature...
+I (1962) secure_boot_v2: Verifying with ECDSA...
+ECDSA I (2012) secure_boot_v2: Signature verified successfully!
+I (2012) flash_encrypt: Encrypting partition 3 at offset 0x20000 (length 0x99000)...
+I (11256) flash_encrypt: Done encrypting
+E (11256) esp_image: image at 0x100000 has invalid magic byte (nothing flashed here?)
+I (11256) flash_encrypt: Setting CRYPT_CNT for permanent encryption
+I (11265) efuse: BURN BLOCK0
+I (11272) efuse: BURN BLOCK0 - OK (all write block bits are set)
+I (11278) efuse: BURN BLOCK0
+I (11285) efuse: BURN BLOCK0 - OK (all write block bits are set)
+I (11291) flash_encrypt: Flash encryption completed
+I (11298) boot: Resetting with flash encryption enabled...
+ESP-ROM:esp8684-api2-20220127
+Build:Jan 27 2022
+rst:0x3 (RTC_SW_SYS_RST),boot:0xe (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40054770
+SPIWP:0xee
+mode:DIO, clock div:1
+Valid secure boot key blocks: 0
+ECDSA secure boot verification succeeded
+load:0x3fcd5d00,len:0x327c
+load:0x403ac370,len:0xba0
+load:0x403aeb70,len:0x56e8
+entry 0x403ac37a
+I (177) boot: ESP-IDF v5.5.1 2nd stage bootloader
+I (177) boot: compile time Dec 19 2025 15:32:53
+I (177) boot: chip revision: v1.2
+I (178) boot: efuse block revision: v0.1
+I (183) boot.esp32c2: MMU Page Size  : 32K
+I (189) boot.esp32c2: SPI Speed      : 60MHz
+I (195) boot.esp32c2: SPI Mode       : DIO
+I (201) boot.esp32c2: SPI Flash Size : 2MB
+I (207) boot: Enabling RNG early entropy source...
+I (214) boot: Partition Table:
+I (218) boot: ## Label            Usage          Type ST Offset   Length
+I (228) boot:  0 nvs              WiFi data        01 02 00011000 00004000
+I (238) boot:  1 otadata          OTA data         01 00 00015000 00002000
+I (249) boot:  2 phy_init         RF data          01 01 00017000 00001000
+I (259) boot:  3 ota_0            OTA app          00 10 00020000 000e0000
+I (269) boot:  4 ota_1            OTA app          00 11 00100000 000e0000
+I (279) boot: End of partition table
+I (284) esp_image: segment 0: paddr=00020020 vaddr=3c060020 size=20da8h (134568) map
+I (328) esp_image: segment 1: paddr=00040dd0 vaddr=3fcb47c0 size=0022ch (   556) load
+I (329) esp_image: segment 2: paddr=00041004 vaddr=3fcb5ea0 size=01f68h (  8040) load
+I (336) esp_image: segment 3: paddr=00042f74 vaddr=40380000 size=050a4h ( 20644) load
+I (351) esp_image: segment 4: paddr=00048020 vaddr=42000020 size=5cc04h (379908) map
+I (449) esp_image: segment 5: paddr=000a4c2c vaddr=403850a4 size=097dch ( 38876) load
+I (460) esp_image: segment 6: paddr=000ae410 vaddr=4038e880 size=05f40h ( 24384) load
+I (467) esp_image: segment 7: paddr=000b4358 vaddr=00000000 size=03c78h ( 15480) 
+I (471) esp_image: Verifying image signature...
+I (473) secure_boot_v2: Verifying with ECDSA...
+ECDSA I (522) secure_boot_v2: Signature verified successfully!
+I (529) boot: Loaded app from partition at offset 0x20000
+I (529) secure_boot_v2: enabling secure boot v2...
+I (529) secure_boot_v2: secure boot v2 is already enabled, continuing..
+I (537) boot: Checking flash encryption...
+I (543) flash_encrypt: flash encryption is enabled (0 plaintext flashes left)
+I (554) boot: Disabling RNG early entropy source...
+[0;32mI (579) cpu_start: Unicore app[0m
+[0;32mI (587) cpu_start: Pro cpu start user code[0m
+[0;32mI (587) cpu_start: cpu freq: 120000000 Hz[0m
+[0;32mI (587) app_init: Application information:[0m
+[0;32mI (592) app_init: Project name:     CO2ControllerFW[0m
+[0;32mI (600) app_init: App version:      1.0.0[0m
+[0;32mI (607) app_init: Compile time:     Dec 19 2025 15:32:24[0m
+[0;32mI (617) app_init: ELF file SHA256:  e920642ac...[0m
+[0;32mI (625) app_init: ESP-IDF:          v5.5.1[0m
+[0;32mI (632) efuse_init: Min chip rev:     v1.1[0m
+[0;32mI (639) efuse_init: Max chip rev:     v2.99 [0m
+[0;32mI (647) efuse_init: Chip rev:         v1.2[0m
+[0;32mI (654) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (666) heap_init: At 3FCB9900 len 00023270 (140 KiB): RAM[0m
+[0;32mI (675) heap_init: At 3FCDCB70 len 0000294C (10 KiB): RAM[0m
+[0;32mI (685) spi_flash: detected chip: generic[0m
+[0;32mI (692) spi_flash: flash io: dio[0m
+[0;32mI (698) flash_encrypt: Flash encryption mode is RELEASE[0m
+[0;32mI (707) sleep_gpio: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (718) sleep_gpio: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (729) coexist: coex firmware version: b0bcc39[0m
+[0;32mI (737) coexist: coexist rom version de8c800[0m
+[0;32mI (745) main_task: Started on CPU0[0m
+[0;32mI (745) main_task: Calling app_main()[0m
+[0;32mI (755) main: Initializing GPIO[0m
+[0;32mI (755) main: Initializing I2C bus[0m
+[0;33mW (765) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs[0m
+[0;32mI (795) main: Initializing NVM[0m
+[0;32mI (795) main: Initializing RTOS queus, events, sempahores[0m
+[0;32mI (805) factory_config: ==============================[0m
+[0;32mI (815) factory_config: Factory Configuration Mode[0m
+[0;32mI (825) factory_config: ==============================[0m
