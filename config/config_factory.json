@@ -45,6 +45,11 @@
   "serial_open_max_retries": 5,
   "serial_open_retry_delay_ms": 50,
   "self_test_monitor_timeout_s": 30,
+  "server_upload": {
+    "enabled": false,
+    "base_url": "http://8.129.99.18:8000",
+    "timeout_sec": 10
+  },
   "device_code_rule": "64YYWWXnnnnn",
   "procedures": [
     {

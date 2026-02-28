@@ -1,7 +1,7 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.usbserial-120",
+  "serial_port": "/dev/cu.wchusbserial10",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
   "flash_mode": "dio",
@@ -45,6 +45,11 @@
   "serial_open_max_retries": 5,
   "serial_open_retry_delay_ms": 50,
   "self_test_monitor_timeout_s": 30,
+  "server_upload": {
+    "enabled": true,
+    "base_url": "http://8.129.99.18:8001",
+    "timeout_sec": 10
+  },
   "procedures": [
     {
       "name": "development_mode_procedure",

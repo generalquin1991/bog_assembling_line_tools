@@ -1,3 +1,6 @@
 [submodule "firmware"]
 	path = firmware
 	url = https://github.com/generalquin1991/BOG_CO2_firmware.git
+[submodule "bog-test-server"]
+	path = bog-test-server
+	url = https://github.com/generalquin1991/bog-test-server.git

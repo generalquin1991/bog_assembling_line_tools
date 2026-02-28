@@ -11,6 +11,7 @@ import sys
 import argparse
 import subprocess
 import shutil
+from urllib.parse import urlparse, urlunparse
 import serial.tools.list_ports
 import serial
 import csv
@@ -34,6 +35,13 @@ except ImportError:
     def play_completion_sound():
         return False
     SOUND_ENABLED = False
+
+# Import requests for server upload (optional)
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
 
 # Import SN generator
 try:
@@ -4493,6 +4501,136 @@ def basic_check_uart(flasher, config_state):
     return flasher._step_check_uart(check_uart_step)
 
 
+def upload_burn_record(burn_info, record=None, config=None):
+    """上传烧录记录到产测服务器（bog-test-server API）
+    
+    Args:
+        burn_info: 烧录信息 dict，含 duration, firmware, start_time, mac_address, success
+        record: 测试结果 record（P+T 时有），含 serial_number, rtc, button_test 等
+        config: 配置 dict，含 server_upload 配置
+    
+    Returns:
+        bool: 上传成功返回 True，否则 False（失败不抛异常）
+    """
+    if not REQUESTS_AVAILABLE:
+        print("  [upload] requests 未安装，跳过上传")
+        return False
+    
+    cfg = (config or {}).get('server_upload', {})
+    if not cfg.get('enabled'):
+        print("  [upload] server_upload.enabled=false，跳过上传（需在配置中启用）")
+        return False
+    
+    base_url_raw = (cfg.get('base_url') or '').rstrip('/')
+    timeout = cfg.get('timeout_sec', 10)
+    if not base_url_raw:
+        print("  [upload] server_upload.base_url 未配置，跳过上传")
+        return False
+    
+    # 按 mode 选择端口：develop=8001 调试环境，factory=8000 生产环境
+    mode = (config or {}).get('mode', 'develop')
+    port = 8001 if mode == 'develop' else 8000
+    try:
+        parsed = urlparse(base_url_raw)
+        host = parsed.hostname or parsed.netloc.split(':')[0]
+        base_url = f"{parsed.scheme}://{host}:{port}" if parsed.scheme else base_url_raw
+    except Exception:
+        base_url = base_url_raw
+    if PRINT_DEBUG_LOGS:
+        print(f"  [upload] mode={mode}, port={port}, base_url={base_url}")
+    
+    # 构建 API 请求体
+    mac_raw = burn_info.get('mac_address') or (record.get('mac_address') or record.get('mac') if record else None)
+    mac_formatted = mac_raw
+    if mac_raw and ':' not in mac_raw and '-' not in mac_raw:
+        # AA:BB:CC:DD:EE:FF 格式
+        mac_formatted = ':'.join(mac_raw[i:i+2] for i in range(0, 12, 2)) if len(mac_raw) >= 12 else mac_raw
+    
+    sn = None
+    if record:
+        sn_obj = record.get('serial_number') or {}
+        sn = sn_obj.get('value') if isinstance(sn_obj, dict) else sn_obj
+    # 设备未写入 SN 时用 "-"，不用 MAC 代替（SN 与 MAC 语义不同）
+    device_serial = sn if sn else "-"
+    
+    # deviceWrittenTimestamp: YYYY-MM-DD HH:MM:SS
+    rtc_time_sent = None
+    if record and record.get('rtc'):
+        rtc = record['rtc']
+        ts = rtc.get('time_sent')
+        if isinstance(ts, str) and 'T' in ts:
+            rtc_time_sent = ts.replace('T', ' ', 1)[:19]
+        elif isinstance(ts, str):
+            rtc_time_sent = ts[:19] if len(ts) >= 19 else ts
+        else:
+            ts_num = rtc.get('time_sent_ts')
+            if isinstance(ts_num, (int, float)):
+                rtc_time_sent = datetime.fromtimestamp(ts_num).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # burnTestResult: passed | failed | self_check_failed | key_abnormal
+    burn_test_result = "passed" if burn_info.get('success') else "failed"
+    if record:
+        btn = record.get('button_test') or {}
+        btn_status = btn.get('status') if isinstance(btn, dict) else btn
+        fcc = record.get('factory_config_complete') or {}
+        fcc_pass = fcc.get('status') == 'pass' if isinstance(fcc, dict) else False
+        if btn_status == 'board_error':
+            burn_test_result = "key_abnormal"
+        elif btn_status in ('timeout', 'user_exit') or not fcc_pass:
+            if burn_test_result == "passed":
+                burn_test_result = "self_check_failed"
+    
+    # 从 bin 文件名解析版本（如 CO2ControllerFW_combined_0_4_0.bin -> 0.4.0），用于固件历史展示
+    firmware_path = burn_info.get('firmware', '') or ''
+    bin_name = os.path.basename(firmware_path)
+    to_version = None
+    ver_match = re.search(r'[_\-.]([\d]+)[_\-.]([\d]+)[_\-.]([\d]+)(?:\.bin)?$', bin_name, re.IGNORECASE)
+    if ver_match:
+        to_version = f"{ver_match.group(1)}.{ver_match.group(2)}.{ver_match.group(3)}"
+    
+    # 获取 bin 文件大小（字节）
+    target_file_size_bytes = None
+    if firmware_path and os.path.isfile(firmware_path):
+        try:
+            target_file_size_bytes = os.path.getsize(firmware_path)
+        except OSError:
+            pass
+    
+    payload = {
+        "deviceSerialNumber": str(device_serial),
+        "macAddress": mac_formatted or mac_raw,
+        "burnStartTime": burn_info.get('start_time'),
+        "burnDurationSeconds": burn_info.get('duration'),
+        "binFileName": bin_name,
+        "deviceWrittenTimestamp": rtc_time_sent,
+        "deviceWrittenSerialNumber": sn,
+        "burnTestResult": burn_test_result,
+        "fromVersion": "N.A",
+        "toVersion": to_version,
+        "targetFileSizeBytes": target_file_size_bytes,
+    }
+    
+    url = f"{base_url}/api/burn-record"
+    print(f"  [upload] 正在上传烧录记录到 {url} ...")
+    if PRINT_DEBUG_LOGS:
+        print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        print(f"  [upload] ✓ 烧录记录已上传成功")
+        return True
+    except Exception as e:
+        print(f"  [upload] ✗ 上传失败: {e}")
+        resp_obj = getattr(e, 'response', None)
+        if PRINT_DEBUG_LOGS and resp_obj is not None:
+            try:
+                err_body = (resp_obj.text or "")[:500] or "(empty)"
+                print(f"  [upload] 响应: {err_body}")
+            except Exception:
+                pass
+        return False
+
+
 def program(flasher, config_state):
     """执行烧录步骤
     
@@ -4562,6 +4700,18 @@ def program(flasher, config_state):
             print(f"  ⚠️  调试: device_info 不存在")
         debug_print(f"  ⚠️  未能从烧录输出中解析 MAC 地址，使用 UNKNOWN")
     
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    firmware_path = flasher.config.get("firmware_path", config_state.get("firmware", ""))
+    
+    # 存储烧录信息，供 P+T 流程中 test 完成后上传使用
+    config_state['_last_burn'] = {
+        'duration': round(duration, 3),
+        'firmware': firmware_path,
+        'start_time': ts,
+        'mac_address': mac_address,
+        'success': bool(success),
+    }
+    
     try:
         # prog/test 统计日志统一写入 local_data 目录
         ensure_local_data_directory()
@@ -4571,15 +4721,13 @@ def program(flasher, config_state):
         prog_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_FLASH.json")
         debug_print(f"  📝 日志文件: {prog_log_path}")
         with open(prog_log_path, "a", encoding="utf-8") as f:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             mode = flasher.config.get("mode", config_state.get("mode", "unknown"))
             port = flasher.config.get("serial_port", config_state.get("port", ""))
-            firmware = flasher.config.get("firmware_path", config_state.get("firmware", ""))
             record = {
                 "timestamp": ts,
                 "mode": mode,
                 "port": port,
-                "firmware": firmware,
+                "firmware": firmware_path,
                 "mac": mac_address,
                 "success": bool(success),
                 "duration_sec": round(duration, 3),
@@ -4672,12 +4820,13 @@ def test(flasher, config_state):
     config = flasher.config
     
     # 统一使用 execute_test_only() 的测试流程
-    # 构造 Test Only 所需的 config_state
+    # 构造 Test Only 所需的 config_state（传递 _last_burn 供 P+T 完成后上传）
     test_state = {
         'port': config_state.get('port') or config.get('serial_port'),
         'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
         'config_path': flasher.config_path,
-        'mode_name': config_state.get('mode_name', 'Test Mode')
+        'mode_name': config_state.get('mode_name', 'Test Mode'),
+        '_last_burn': config_state.get('_last_burn'),
     }
     
     return execute_test_only(test_state)
@@ -4827,6 +4976,11 @@ def execute_program_only(config_state):
         # 2. Program (flash firmware)
         print("\n[Step 2/2] Programming firmware...")
         success = program(flasher, config_state)
+        
+        # Program Only：烧录完成后上传烧录记录
+        burn_info = config_state.get('_last_burn')
+        if burn_info and flasher.config:
+            upload_burn_record(burn_info, record=None, config=flasher.config)
         
         if success:
             must_print("\n\033[92m✓ Program completed successfully\033[0m")
@@ -6586,21 +6740,23 @@ def execute_test_only(config_state):
                     record['factory_mode'] = monitored_data.get('factory_mode_detected', False)
                     
                     # RTC 测试结果
+                    rtc_result = {}
+                    if monitored_data.get('rtc_time_input'):
+                        rtc_result['time_sent'] = monitored_data['rtc_time_input']
+                    if monitored_data.get('rtc_time_input_ts') is not None:
+                        rtc_result['time_sent_ts'] = monitored_data['rtc_time_input_ts']
+                    rtc_result['return_success'] = monitored_data.get('rtc_return_success', False)
                     if monitored_data.get('rtc_time'):
-                        rtc_result = {
-                            "status": "pass",
-                            "log": monitored_data['rtc_time']
-                        }
-                        # 如果解析到了日期和时间，添加到结果中
+                        rtc_result["status"] = "pass"
+                        rtc_result["log"] = monitored_data['rtc_time']
                         if monitored_data.get('rtc_date'):
                             rtc_result['date'] = monitored_data['rtc_date']
                         if monitored_data.get('rtc_time_str'):
                             rtc_result['time'] = monitored_data['rtc_time_str']
                         record['rtc'] = rtc_result
                     else:
-                        record['rtc'] = {
-                            "status": "not_detected"
-                        }
+                        rtc_result["status"] = "not_detected"
+                        record['rtc'] = rtc_result
                     
                     # 压力传感器测试结果
                     if monitored_data.get('pressure_sensor'):
@@ -6665,6 +6821,11 @@ def execute_test_only(config_state):
                 # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
                 json.dump(record, f, ensure_ascii=False, indent=2)
                 f.write("\n\n")
+                
+                # P+T 流程：有 _last_burn 时上传烧录记录到产测服务器
+                burn_info = config_state.get('_last_burn')
+                if burn_info and config:
+                    upload_burn_record(burn_info, record=record, config=config)
         except Exception:
             # 记录失败不影响主流程
             pass
