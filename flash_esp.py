@@ -3045,8 +3045,8 @@ def menu_mode_main(config_state, mode_type):
                 # After operation, return to menu (user already pressed Enter in the function)
                 continue
             elif action == 'test_only':
-                # Test only mode: run test flow without flashing
-                execute_test_only(config_state)
+                # Test only mode: run test flow without flashing（独立 T-only，不使用之前的 _last_burn）
+                execute_test_only(config_state, is_standalone_t_only=True)
                 # After operation, return to menu (user already pressed Enter in the function)
                 continue
             elif action == 'settings':
@@ -4568,15 +4568,18 @@ def upload_burn_record(burn_info, record=None, config=None):
                 rtc_time_sent = datetime.fromtimestamp(ts_num).strftime('%Y-%m-%d %H:%M:%S')
     
     # burnTestResult: passed | failed | self_check_failed | key_abnormal
+    # 空格(SPACE)=按键测试失败 -> key_abnormal；ESC=用户声明设备异常 -> self_check_failed + button_user_exit
     burn_test_result = "passed" if burn_info.get('success') else "failed"
     failure_reason = None  # rtc_error | pressure_sensor_error | button_timeout | button_user_exit | factory_config_incomplete | other
     if record:
         btn = record.get('button_test') or {}
-        btn_status = btn.get('status') if isinstance(btn, dict) else btn
+        btn_status = (btn.get('status') if isinstance(btn, dict) else btn) or ''
         fcc = record.get('factory_config_complete') or {}
         fcc_pass = fcc.get('status') == 'pass' if isinstance(fcc, dict) else False
+        # 空格标记的按键测试失败优先：burnTestResult=key_abnormal，不填 failureReason
         if btn_status == 'board_error':
             burn_test_result = "key_abnormal"
+            failure_reason = None
         elif btn_status in ('timeout', 'user_exit') or not fcc_pass:
             if burn_test_result == "passed":
                 burn_test_result = "self_check_failed"
@@ -4634,6 +4637,102 @@ def upload_burn_record(burn_info, record=None, config=None):
                 print(f"  [upload] 响应: {err_body}")
             except Exception:
                 pass
+        return False
+
+
+def upload_self_test_record(record, config=None, test_start_time=None, duration=None):
+    """上传 T-only 自检记录到产测服务器（复用 /api/burn-record，flowType=T，成功或失败均上报）
+    
+    Args:
+        record: 测试结果 record，含 mac_address, button_test, self_check_failure_reason 等
+        config: 配置 dict，含 server_upload 配置
+        test_start_time: 测试开始时间戳（用于 burnStartTime）
+        duration: 测试耗时秒数
+    
+    Returns:
+        bool: 上传成功返回 True，否则 False
+    """
+    if not REQUESTS_AVAILABLE:
+        print("  [upload] requests 未安装，跳过上传")
+        return False
+    
+    cfg = (config or {}).get('server_upload', {})
+    if not cfg.get('enabled'):
+        if PRINT_DEBUG_LOGS:
+            print("  [upload] server_upload.enabled=false，跳过 T-only 上报")
+        return False
+    
+    base_url_raw = (cfg.get('base_url') or '').rstrip('/')
+    timeout = cfg.get('timeout_sec', 10)
+    if not base_url_raw:
+        print("  [upload] server_upload.base_url 未配置，跳过上传")
+        return False
+    
+    mode = (config or {}).get('mode', 'develop')
+    port = 8001 if mode == 'develop' else 8000
+    try:
+        parsed = urlparse(base_url_raw)
+        host = parsed.hostname or parsed.netloc.split(':')[0]
+        base_url = f"{parsed.scheme}://{host}:{port}" if parsed.scheme else base_url_raw
+    except Exception:
+        base_url = base_url_raw
+    
+    mac_raw = record.get('mac_address') or record.get('mac')
+    mac_formatted = mac_raw
+    if mac_raw and ':' not in str(mac_raw) and '-' not in str(mac_raw):
+        mac_formatted = ':'.join(mac_raw[i:i+2] for i in range(0, 12, 2)) if len(mac_raw) >= 12 else mac_raw
+    
+    sn_obj = record.get('serial_number') or {}
+    sn = sn_obj.get('value') if isinstance(sn_obj, dict) else sn_obj
+    device_serial = sn if sn else "-"
+    
+    btn = record.get('button_test') or {}
+    btn_status = btn.get('status') if isinstance(btn, dict) else btn
+    fcc = record.get('factory_config_complete') or {}
+    fcc_pass = fcc.get('status') == 'pass' if isinstance(fcc, dict) else False
+    
+    # 成功：全部通过；失败：self_check_failed 或 key_abnormal
+    if btn_status == 'board_error':
+        burn_test_result = "key_abnormal"
+        failure_reason = record.get('self_check_failure_reason')
+    elif btn_status in ('user_exit', 'timeout') or not fcc_pass:
+        burn_test_result = "self_check_failed"
+        failure_reason = record.get('self_check_failure_reason')
+    else:
+        burn_test_result = "passed"
+        failure_reason = None
+    
+    burn_start_time = None
+    if test_start_time is not None:
+        try:
+            burn_start_time = datetime.fromtimestamp(test_start_time).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            pass
+    
+    payload = {
+        "deviceSerialNumber": str(device_serial),
+        "macAddress": mac_formatted or mac_raw,
+        "burnStartTime": burn_start_time,
+        "burnDurationSeconds": round(duration, 3) if duration is not None else None,
+        "binFileName": None,
+        "deviceWrittenTimestamp": None,
+        "deviceWrittenSerialNumber": None,
+        "burnTestResult": burn_test_result,
+        "failureReason": failure_reason,
+        "flowType": "T",
+    }
+    
+    url = f"{base_url}/api/burn-record"
+    print(f"  [upload] 正在上传 T-only 自检记录到 {url} ...")
+    if PRINT_DEBUG_LOGS:
+        print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        print(f"  [upload] ✓ T-only 自检记录已上传成功")
+        return True
+    except Exception as e:
+        print(f"  [upload] ✗ 上传失败: {e}")
         return False
 
 
@@ -5112,8 +5211,14 @@ def run_esptool_command(args):
     return code, output, is_secure_download_mode
 
 
-def execute_test_only(config_state):
-    """执行测试（不烧录，使用 esptool run 命令启动并监控日志，通过关键字匹配判断自检状态）"""
+def execute_test_only(config_state, is_standalone_t_only=False):
+    """执行测试（不烧录，使用 esptool run 命令启动并监控日志，通过关键字匹配判断自检状态）
+    
+    Args:
+        config_state: 配置状态字典
+        is_standalone_t_only: 若为 True，表示从「Test Only」菜单独立调用，上报时始终用 flowType=T；
+            若为 False，表示来自 P+T 的 test()，有 _last_burn 时用 flowType=P+T 上报
+    """
     # 不清屏，避免把之前菜单/日志全部擦掉，方便用户回看
     print("\n" + "=" * 80)
     print("Test Only - 自检模式（不烧录，使用 esptool run 启动并监控日志）")
@@ -5402,9 +5507,7 @@ def execute_test_only(config_state):
                 # 在开发模式下，如果检测到加密固件，应该拒绝测试
                 print(f"\n  ✗ 开发模式下检测到加密固件，拒绝本次测试")
                 
-                # 确保日志文件已关闭
-                if log_file:
-                    log_file.close()
+                # 不在此关闭 log_file，由 finally 或父函数负责
                 
                 print(f"\nPress Enter to return...")
                 try:
@@ -5778,7 +5881,7 @@ def execute_test_only(config_state):
                                     button_terminal_raw_mode = False
                                 
                                 # Initial prompt (will be refreshed dynamically)
-                                print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC跳过/空格标记板卡错误]", end='', flush=True)
+                                print(f"  \033[33m🔘 请点击按键\033[0m (等待时间: 0.0s) [按ESC声明设备异常/按空格标记按键测试失败]", end='', flush=True)
                                 log_file.write(f"[TEST STATUS] Button prompt detected, waiting for button press (press ESC to exit)\n")
                                 log_file.write(f"[DEBUG] Matched pattern: {pattern}, Line: {line_clean}\n")
                                 log_file.flush()
@@ -6227,43 +6330,49 @@ def execute_test_only(config_state):
                             
                             # Check if it's ESC key (could be standalone \x1b or part of escape sequence)
                             if ch == '\x1b':  # ESC key
-                                # Clear any remaining escape sequence characters (like [A for arrow keys)
-                                # Read with timeout to avoid blocking
+                                # 仅丢弃标准 ESC 序列（如 [A 方向键），避免误丢弃 Space
+                                # 部分终端 Alt+Space 会发送 \x1b \x20，若直接丢弃会误判为 ESC
                                 import select as select_module
-                                while True:
-                                    if not select_module.select([sys.stdin], [], [], 0.01)[0]:
-                                        break  # No more input
-                                    try:
-                                        # Read and discard additional characters in escape sequence
-                                        sys.stdin.read(1)
-                                    except:
-                                        break
+                                next_ch = None
+                                if select_module.select([sys.stdin], [], [], 0.02)[0]:
+                                    next_ch = sys.stdin.read(1)
+                                if next_ch in ('[', '?', 'O'):  # 标准 ESC 序列前缀，丢弃剩余
+                                    while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                        try:
+                                            sys.stdin.read(1)
+                                        except Exception:
+                                            break
+                                    # 确认为 ESC
+                                    treat_as_space = False
+                                elif next_ch == ' ' or next_ch == '\x20':  # \x1b+Space = Alt+Space，按 Space 处理
+                                    treat_as_space = True
+                                else:
+                                    treat_as_space = False
                                 
-                                key_detected = True
-                                button_test_done = True
-                                button_refresh_enabled = False
-                                button_test_esc_pressed = True  # Mark ESC was pressed - exit test immediately
-                                monitored_data['button_test_result'] = 'FAIL'
-                                # Clear the dynamic line and print fail message with immediate flush
-                                print(f"\r  \033[K\033[31m✗ 按键测试: 未通过（按ESC跳过）\033[0m", flush=True)
-                                print()  # Add newline to ensure the message is on its own line and visible
-                                log_file.write(f"[TEST STATUS] Button Test: FAIL (ESC pressed - button not detected)\n")
-                                log_file.flush()
-                                # Force stdout flush to ensure the message is displayed immediately
-                                sys.stdout.flush()
-                            # Check if it's SPACE key (to mark board error)
-                            elif ch == ' ':  # SPACE key
+                                if treat_as_space:
+                                    ch = ' '  # 下面走 Space 分支
+                                else:
+                                    key_detected = True
+                                    button_test_done = True
+                                    button_refresh_enabled = False
+                                    button_test_esc_pressed = True
+                                    monitored_data['button_test_result'] = 'USER_EXIT'
+                                    print(f"\r  \033[K\033[31m✗ 按键测试: 用户中断（设备行为异常，按ESC声明）\033[0m", flush=True)
+                                    print()
+                                    log_file.write(f"[TEST STATUS] Button Test: USER_EXIT (ESC pressed - user observed device misbehavior)\n")
+                                    log_file.flush()
+                                    sys.stdout.flush()
+                            
+                            if ch == ' ':  # SPACE key（含 \x1b+Space 的 Alt+Space）
                                 key_detected = True
                                 button_test_done = True
                                 button_refresh_enabled = False
                                 button_test_space_pressed = True  # Mark SPACE was pressed - board error
                                 monitored_data['button_test_result'] = 'BOARD_ERROR'
-                                # Clear the dynamic line and print board error message with immediate flush
-                                print(f"\r  \033[K\033[31m✗ 按键测试: 板卡错误（按空格标记）\033[0m", flush=True)
-                                print()  # Add newline to ensure the message is on its own line and visible
-                                log_file.write(f"[TEST STATUS] Button Test: BOARD_ERROR (SPACE pressed - board error marked by user)\n")
+                                print(f"\r  \033[K\033[31m✗ 按键测试: 按键测试失败（设备无反应/反应不对，按空格标记）\033[0m", flush=True)
+                                print()
+                                log_file.write(f"[TEST STATUS] Button Test: KEY_ABNORMAL (SPACE pressed - device didn't respond when user pressed button)\n")
                                 log_file.flush()
-                                # Force stdout flush to ensure the message is displayed immediately
                                 sys.stdout.flush()
                             # If it's not ESC or SPACE, ignore the character (it's already consumed and won't be printed in raw mode)
                 except (ImportError, OSError, AttributeError):
@@ -6275,7 +6384,7 @@ def execute_test_only(config_state):
                     # Refresh at configured interval
                     if last_button_refresh_time is None or (current_time - last_button_refresh_time) >= prompt_refresh_interval:
                         # Clear line and print updated prompt: \r to return to start, \033[K to clear to end of line
-                        print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC跳过/空格标记板卡错误]", end='', flush=True)
+                        print(f"\r  \033[K\033[33m🔘 请点击按键\033[0m (等待时间: {elapsed:.1f}s) [按ESC声明设备异常/按空格标记按键测试失败]", end='', flush=True)
                         last_button_refresh_time = current_time
                     
                     # Play sound every 3 seconds
@@ -6327,12 +6436,12 @@ def execute_test_only(config_state):
         
         # Check if ESC or SPACE was pressed during button test - exit immediately
         if button_test_esc_pressed:
-            print("\n  \033[31m✗ 测试失败：按键未检测到，用户按ESC退出\033[0m")
-            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Button not detected, user pressed ESC to exit\n")
+            print("\n  \033[31m✗ 测试失败：用户观察到设备行为异常，按ESC声明中断\033[0m")
+            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: User observed device misbehavior, pressed ESC to declare\n")
             log_file.flush()
         elif button_test_space_pressed:
-            print("\n  \033[31m✗ 测试失败：板卡错误，用户按空格标记\033[0m")
-            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Board error, user pressed SPACE to mark\n")
+            print("\n  \033[31m✗ 测试失败：按键测试失败（设备无反应/反应不对，用户按空格标记）\033[0m")
+            log_file.write(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Test failed: Button test failed (device didn't respond), user pressed SPACE to mark\n")
             log_file.flush()
         
         # Check monitoring timeout (only if user didn't exit and no key was pressed)
@@ -6375,21 +6484,20 @@ def execute_test_only(config_state):
         # Close serial port
         if ser is not None and ser.is_open:
             ser.close()
-        if log_file:
-            log_file.close()
+        # 不在此处关闭 log_file：standalone 模式由 finally 关闭，P+T 复用模式由父函数关闭
         
         # If ESC or SPACE was pressed during button test, exit immediately with failure
         if button_test_esc_pressed:
             print("\n" + "=" * 80)
             print("测试失败")
             print("=" * 80)
-            print("  ✗ 按键测试未通过：用户按ESC退出（按键未检测到）")
+            print("  ✗ 按键测试未通过：用户观察到设备行为异常，按ESC声明中断")
             print("=" * 80)
         elif button_test_space_pressed:
             print("\n" + "=" * 80)
             print("测试失败")
             print("=" * 80)
-            print("  ✗ 按键测试未通过：板卡错误（用户按空格标记）")
+            print("  ✗ 按键测试未通过：按键测试失败（设备无反应/反应不对，用户按空格标记）")
             print("=" * 80)
             if log_file_created_here and 'log_filepath' in locals() and log_filepath:
                 print(f"\n📁 设备日志已保存到: {log_filepath}")
@@ -6510,11 +6618,11 @@ def execute_test_only(config_state):
             if button_result == 'PASS':
                 summary_items.append(("按键测试", "\033[32m✓ 通过\033[0m"))
             elif button_result == 'BOARD_ERROR':
-                summary_items.append(("按键测试", "\033[31m✗ 板卡错误（用户按空格标记）\033[0m"))
+                summary_items.append(("按键测试", "\033[31m✗ 按键测试失败（设备无反应/反应不对，用户按空格标记）\033[0m"))
             elif button_result == 'FAIL':
                 summary_items.append(("按键测试", "\033[31m✗ 未通过（未检测到按键）\033[0m"))
             elif button_result == 'USER_EXIT':
-                summary_items.append(("按键测试", "\033[33m⚠️  用户退出（按ESC）\033[0m"))
+                summary_items.append(("按键测试", "\033[33m⚠️  用户观察到设备行为异常（按ESC声明）\033[0m"))
             elif button_result == 'TIMEOUT':
                 summary_items.append(("按键测试", "\033[31m✗ 超时（未检测到按键动作）\033[0m"))
             else:
@@ -6847,12 +6955,14 @@ def execute_test_only(config_state):
                             "status": "not_detected"
                         }
                     
-                    # 自检失败原因（仅当 burnTestResult 为 self_check_failed 时有意义）
+                    # 自检失败原因（P+T 和 T-only 均需计算，用于上报）
                     failure_reason = None
                     btn_status = (button_result or "").lower() if button_result else None
                     fcc_pass = monitored_data.get('factory_config_complete', False)
                     burn_success = (config_state.get('_last_burn') or {}).get('success', False)
-                    if burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass):
+                    need_failure_reason = (burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass)) or \
+                        (not burn_success and (btn_status in ('timeout', 'user_exit', 'board_error') or not fcc_pass))
+                    if need_failure_reason:
                         if monitored_data.get('rtc_error_detected'):
                             failure_reason = "rtc_error"
                         elif monitored_data.get('pressure_sensor_error_detected'):
@@ -6861,6 +6971,8 @@ def execute_test_only(config_state):
                             failure_reason = "button_timeout"
                         elif btn_status == 'user_exit':
                             failure_reason = "button_user_exit"
+                        elif btn_status == 'board_error':
+                            failure_reason = None  # board_error 用 burnTestResult=key_abnormal 表示
                         elif not fcc_pass:
                             failure_reason = "factory_config_incomplete"
                         else:
@@ -6872,10 +6984,39 @@ def execute_test_only(config_state):
                 json.dump(record, f, ensure_ascii=False, indent=2)
                 f.write("\n\n")
                 
-                # P+T 流程：有 _last_burn 时上传烧录记录到产测服务器
+                # P+T 流程：有 _last_burn 且非独立 T-only 时上传烧录记录；独立 T-only 始终用 flowType=T
+                upload_ok = False
+                upload_type = None  # 'burn' | 't_only' | None
                 burn_info = config_state.get('_last_burn')
-                if burn_info and config:
-                    upload_burn_record(burn_info, record=record, config=config)
+                if burn_info and config and not is_standalone_t_only:
+                    upload_ok = upload_burn_record(burn_info, record=record, config=config)
+                    upload_type = 'burn'
+                else:
+                    # T-only 流程：无烧录时，无论成功或失败均上报
+                    if config and (record.get('mac_address') or record.get('mac')):
+                        upload_ok = upload_self_test_record(
+                            record,
+                            config=config,
+                            test_start_time=overall_start_time,
+                            duration=duration,
+                        )
+                        upload_type = 't_only'
+                
+                # 在日志区和终端显示上传结果
+                if upload_type:
+                    ts_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    if upload_ok:
+                        msg = f"[{ts_str}] [上传] ✓ 自检记录已上报至产测服务器"
+                    else:
+                        msg = f"[{ts_str}] [上传] ✗ 上报失败（请检查 server_upload 配置或网络）"
+                    print(f"\n  {msg}")
+                    if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                        try:
+                            with open(log_filepath, 'a', encoding='utf-8') as lf:
+                                lf.write(f"\n{msg}\n")
+                                lf.flush()
+                        except Exception:
+                            pass
         except Exception:
             # 记录失败不影响主流程
             pass

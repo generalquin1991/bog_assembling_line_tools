@@ -185,6 +185,14 @@
                   "Factory Configuration Complete",
                   "Factory configuration complete",
                   "Configuration Complete"
+                ],
+                "rtc_error": [
+                  "RTC error during factory configuration",
+                  "RTC error"
+                ],
+                "pressure_sensor_error": [
+                  "Pressure Sensor error during factory configuration",
+                  "Pressure Sensor error"
                 ]
               },
               "extract_mac": true,

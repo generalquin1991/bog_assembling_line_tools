@@ -3,7 +3,7 @@
   "description": "开发模式 - 用于开发和调试，不加密",
   "serial_port": "/dev/cu.wchusbserial10",
   "chip_type": "esp32c2",
-  "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_4_2.bin",
   "flash_mode": "dio",
   "flash_freq": "60m",
   "flash_size": "2MB",
@@ -184,6 +184,14 @@
                   "Factory Configuration Complete",
                   "Factory configuration complete",
                   "Configuration Complete"
+                ],
+                "rtc_error": [
+                  "RTC error during factory configuration",
+                  "RTC error"
+                ],
+                "pressure_sensor_error": [
+                  "Pressure Sensor error during factory configuration",
+                  "Pressure Sensor error"
                 ]
               },
               "extract_mac": true,
