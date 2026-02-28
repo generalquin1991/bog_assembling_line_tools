@@ -163,7 +163,7 @@ Configuration files contain the following main items:
 - **服务端项目**：[bog-test-server/](bog-test-server/)（FastAPI，SQLite，Dashboard）
 - **API 规范**：[bog-test-server/API_SPEC.md](bog-test-server/API_SPEC.md)（供其他工程/Agent 集成）
 
-客户端在 `config_develop.json` / `config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。
+客户端在 `config_develop.json` / `config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。**端口约定**：开发模式（config_develop）映射调试环境 **8001**，生产模式（config_factory）映射生产环境 **8000**。
 
 ## Directory Structure
 
