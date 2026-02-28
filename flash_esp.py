@@ -4569,6 +4569,7 @@ def upload_burn_record(burn_info, record=None, config=None):
     
     # burnTestResult: passed | failed | self_check_failed | key_abnormal
     burn_test_result = "passed" if burn_info.get('success') else "failed"
+    failure_reason = None  # rtc_error | pressure_sensor_error | button_timeout | button_user_exit | factory_config_incomplete | other
     if record:
         btn = record.get('button_test') or {}
         btn_status = btn.get('status') if isinstance(btn, dict) else btn
@@ -4579,6 +4580,7 @@ def upload_burn_record(burn_info, record=None, config=None):
         elif btn_status in ('timeout', 'user_exit') or not fcc_pass:
             if burn_test_result == "passed":
                 burn_test_result = "self_check_failed"
+                failure_reason = record.get('self_check_failure_reason')
     
     # 从 bin 文件名解析版本（如 CO2ControllerFW_combined_0_4_0.bin -> 0.4.0），用于固件历史展示
     firmware_path = burn_info.get('firmware', '') or ''
@@ -4596,6 +4598,8 @@ def upload_burn_record(burn_info, record=None, config=None):
         except OSError:
             pass
     
+    # flowType: P=仅烧录, T=仅自检, P+T=烧录+自检
+    flow_type = "P+T" if record else "P"
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
@@ -4605,6 +4609,8 @@ def upload_burn_record(burn_info, record=None, config=None):
         "deviceWrittenTimestamp": rtc_time_sent,
         "deviceWrittenSerialNumber": sn,
         "burnTestResult": burn_test_result,
+        "failureReason": failure_reason,
+        "flowType": flow_type,
         "fromVersion": "N.A",
         "toVersion": to_version,
         "targetFileSizeBytes": target_file_size_bytes,
@@ -5292,6 +5298,9 @@ def execute_test_only(config_state):
         'encrypted_firmware_detected': False,
         'factory_config_complete': False,
         'device_tasks_started': False,
+        # Self-check failure reasons (device-reported errors)
+        'rtc_error_detected': False,
+        'pressure_sensor_error_detected': False,
         # Firmware/App version related fields
         'selected_firmware': selected_firmware,
         'expected_app_version': expected_app_version,
@@ -6124,6 +6133,26 @@ def execute_test_only(config_state):
                                 log_file.write(f"[TEST STATUS] Factory Configuration Complete (detected: {pattern})\n")
                                 log_file.flush()
                                 break
+                    
+                    # 12. Self-check error detection (RTC, Pressure Sensor - device-reported errors)
+                    if not monitored_data.get('rtc_error_detected'):
+                        rtc_error_patterns = log_patterns.get('rtc_error', [])
+                        for pattern in rtc_error_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['rtc_error_detected'] = True
+                                print(f"  \033[31m✗ RTC错误: {line_clean}\033[0m")
+                                log_file.write(f"[TEST STATUS] RTC ERROR detected - {line_clean}\n")
+                                log_file.flush()
+                                break
+                    if not monitored_data.get('pressure_sensor_error_detected'):
+                        pressure_error_patterns = log_patterns.get('pressure_sensor_error', [])
+                        for pattern in pressure_error_patterns:
+                            if pattern.lower() in line_clean.lower():
+                                monitored_data['pressure_sensor_error_detected'] = True
+                                print(f"  \033[31m✗ 压力传感器错误: {line_clean}\033[0m")
+                                log_file.write(f"[TEST STATUS] Pressure Sensor ERROR detected - {line_clean}\n")
+                                log_file.flush()
+                                break
             
             # Dynamic model number prompt refresh (3 times per second = every 333ms)
             # No timeout - keep waiting until model number is input or user presses ESC
@@ -6817,6 +6846,27 @@ def execute_test_only(config_state):
                         record['factory_config_complete'] = {
                             "status": "not_detected"
                         }
+                    
+                    # 自检失败原因（仅当 burnTestResult 为 self_check_failed 时有意义）
+                    failure_reason = None
+                    btn_status = (button_result or "").lower() if button_result else None
+                    fcc_pass = monitored_data.get('factory_config_complete', False)
+                    burn_success = (config_state.get('_last_burn') or {}).get('success', False)
+                    if burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass):
+                        if monitored_data.get('rtc_error_detected'):
+                            failure_reason = "rtc_error"
+                        elif monitored_data.get('pressure_sensor_error_detected'):
+                            failure_reason = "pressure_sensor_error"
+                        elif btn_status == 'timeout':
+                            failure_reason = "button_timeout"
+                        elif btn_status == 'user_exit':
+                            failure_reason = "button_user_exit"
+                        elif not fcc_pass:
+                            failure_reason = "factory_config_incomplete"
+                        else:
+                            failure_reason = "other"
+                    if failure_reason:
+                        record['self_check_failure_reason'] = failure_reason
                 
                 # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
                 json.dump(record, f, ensure_ascii=False, indent=2)
