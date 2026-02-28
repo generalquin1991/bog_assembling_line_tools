@@ -361,6 +361,59 @@ def _maybe_start_upload_retry_thread(config, base_url):
     debug_print("  [upload] 已启动后台重试线程（队列中有待上传记录）")
 
 
+# ---------- TUI 底部服务器 ping 延迟显示 ----------
+_tui_ping_base_url = None
+_tui_ping_ms = None
+_tui_ping_error = True
+_tui_ping_lock = threading.Lock()
+_tui_ping_thread_started = False
+
+
+def _tui_ping_worker():
+    """后台线程：循环 ping 当前 base_url，更新延迟供 TUI 底部显示。"""
+    global _tui_ping_ms, _tui_ping_error
+    while True:
+        url = _tui_ping_base_url
+        if not url:
+            time.sleep(2)
+            continue
+        ping_url = (url.rstrip("/") + "/api/deploy-info") if url else ""
+        if not ping_url:
+            time.sleep(3)
+            continue
+        t0 = time.perf_counter()
+        try:
+            if REQUESTS_AVAILABLE:
+                # 超时时间 3s
+                r = requests.get(ping_url, timeout=3)
+                ok = r.status_code < 500
+            else:
+                ok = False
+        except Exception:
+            ok = False
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        with _tui_ping_lock:
+            _tui_ping_ms = round(elapsed_ms, 0) if ok else None
+            _tui_ping_error = not ok
+        # 每次 ping 结束后立刻开始下一次（频率由网络延迟和 3s 超时自然控制）
+
+
+def _tui_get_ping_display():
+    """返回 (文案, 颜色码)。颜色: 绿 <1s, 黄 1-3s, 红 >3s 或不可达。"""
+    with _tui_ping_lock:
+        ms, err = _tui_ping_ms, _tui_ping_error
+    if err or ms is None:
+        return "服务器: 不可达", "\033[31m"
+    # 1s 内绿色
+    if ms < 1000:
+        return f"服务器: {int(ms)} ms", "\033[32m"
+    # 3s 内黄色
+    if ms <= 3000:
+        return f"服务器: {int(ms)} ms", "\033[33m"
+    # 超过 3s 或其他异常情况视为红色
+    return f"服务器: {int(ms)} ms", "\033[31m"
+
+
 def get_log_file_path(filename):
     """获取日志文件的完整路径"""
     ensure_log_directory()
@@ -3004,6 +3057,18 @@ def run_tui_once():
         print("Error: Unable to load inquirer library, please run: pip install inquirer")
         return
     
+    # 去掉 inquirer 的 "[?] :" 行：当 message 为空时不渲染该行（已有 Please select... 提示）
+    try:
+        from inquirer.render.console import ConsoleRender
+        _orig_print_header = ConsoleRender._print_header
+        def _print_header_no_empty_prompt(self, render):
+            if (render.get_header() or "").strip() == "" and not (render.question.show_default and render.question.default):
+                return
+            _orig_print_header(self, render)
+        ConsoleRender._print_header = _print_header_no_empty_prompt
+    except Exception:
+        pass
+    
     # Configuration state
     config_state = {
         'mode': None,
@@ -3118,6 +3183,32 @@ def menu_mode_main(config_state, mode_type):
     # Remember last selected action to restore selection when returning from operations
     last_selected_action = None
     
+    # 启动 TUI 底部服务器 ping 线程（仅一次，且仅在 server_upload 启用时设置 base_url）
+    global _tui_ping_base_url, _tui_ping_thread_started
+    try:
+        default_config = load_default_config(config_path)
+        cfg = (default_config or {}).get("server_upload", {})
+        if cfg.get("enabled") and (cfg.get("base_url") or "").strip():
+            base_url_raw = (cfg.get("base_url") or "").rstrip("/")
+            port = 8001 if mode_type == "develop" else 8000
+            try:
+                parsed = urlparse(base_url_raw)
+                host = parsed.hostname or (parsed.netloc.split(":")[0] if parsed.netloc else "")
+                if parsed.scheme and host:
+                    _tui_ping_base_url = f"{parsed.scheme}://{host}:{port}"
+                else:
+                    _tui_ping_base_url = base_url_raw
+            except Exception:
+                _tui_ping_base_url = base_url_raw
+            if not _tui_ping_thread_started:
+                _tui_ping_thread_started = True
+                t = threading.Thread(target=_tui_ping_worker, daemon=True)
+                t.start()
+        else:
+            _tui_ping_base_url = None
+    except Exception:
+        _tui_ping_base_url = None
+    
     while True:
         try:
             clear_screen()
@@ -3160,6 +3251,14 @@ def menu_mode_main(config_state, mode_type):
                         default_action = last_selected_action
                         break
             
+            # 底部：服务器实时 ping 延迟（仅当 server_upload 启用时显示）
+            # 这里仍然使用普通 print 输出在菜单上方，避免被 inquirer 清屏覆盖。
+            if _tui_ping_base_url:
+                text, color = _tui_get_ping_display()
+                reset = "\033[0m"
+                print(f"  {color}{text}{reset}")
+                print()
+
             mode_menu = [
                 inquirer.List('action',
                              message="",
