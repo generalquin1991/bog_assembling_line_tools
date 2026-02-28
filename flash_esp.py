@@ -6528,6 +6528,11 @@ def execute_test_only(config_state, is_standalone_t_only=False):
         if not user_exit_requested and not button_test_esc_pressed and not button_test_space_pressed:
             elapsed_time = time.time() - start_time
             if elapsed_time >= timeout:
+                # 若超时退出时正在等待按键，则标记为按键超时，失败原因写超时
+                if monitor_button and button_detected and not button_test_done:
+                    monitored_data['button_test_result'] = 'TIMEOUT'
+                    if button_prompt_time is not None:
+                        monitored_data['button_wait_seconds'] = round(time.time() - button_prompt_time, 2)
                 # Clear any active dynamic prompt line before printing timeout message
                 if button_refresh_enabled:
                     print("\r  \033[K", end='', flush=True)
