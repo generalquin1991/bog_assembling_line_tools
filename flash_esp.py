@@ -19,6 +19,7 @@ import threading
 import time
 import re
 import platform
+import socket
 from datetime import datetime
 from pathlib import Path
 import io
@@ -45,7 +46,14 @@ except ImportError:
 
 # Import SN generator
 try:
-    from sn_generator import generate_sn, update_sn_status, HashVerificationError
+    from sn_generator import (
+        generate_sn,
+        update_sn_status,
+        HashVerificationError,
+        get_computer_id_from_serial,
+        get_computer_id_from_mac,
+        MacMappingError,
+    )
     SN_GENERATOR_ENABLED = True
 except ImportError:
     # If sn_generator is not available, define dummy functions
@@ -53,7 +61,13 @@ except ImportError:
         return None
     def update_sn_status(*args, **kwargs):
         return False
+    def get_computer_id_from_serial(*args, **kwargs):
+        raise RuntimeError("sn_generator not available")
+    def get_computer_id_from_mac(*args, **kwargs):
+        raise RuntimeError("sn_generator not available")
     class HashVerificationError(Exception):
+        pass
+    class MacMappingError(Exception):
         pass
     SN_GENERATOR_ENABLED = False
 
@@ -2981,7 +2995,7 @@ def menu_mode_main(config_state, mode_type):
     while True:
         try:
             clear_screen()
-            print_header(f"{mode_name.upper()} MODE", 80)
+            print_header(mode_name.upper(), 80)
             
             # Display current configuration summary (formatted table)
             print_section_header("Current Configuration Summary", 80)
@@ -4536,11 +4550,26 @@ def upload_burn_record(burn_info, record=None, config=None):
         base_url = f"{parsed.scheme}://{host}:{port}" if parsed.scheme else base_url_raw
     except Exception:
         base_url = base_url_raw
-    if PRINT_DEBUG_LOGS:
-        print(f"  [upload] mode={mode}, port={port}, base_url={base_url}")
+    debug_print(f"  [upload] mode={mode}, port={port}, base_url={base_url}")
+    
+    # 电脑身份：仅从映射表(mac_mapping.json)查找，找到则为 PC-N，否则为空（不兜底 hostname 等）
+    computer_identity = (cfg.get('computer_identity') or '').strip() or None
+    if not computer_identity and SN_GENERATOR_ENABLED:
+        mapping_path = cfg.get('mac_mapping_path') or 'mac_mapping.json'
+        try:
+            try:
+                cid = get_computer_id_from_serial(mapping_path)
+            except (MacMappingError, HashVerificationError, Exception):
+                cid = get_computer_id_from_mac(None, mapping_path)
+            computer_identity = f"PC-{cid}"
+        except (MacMappingError, HashVerificationError, Exception):
+            computer_identity = None
     
     # 构建 API 请求体
     mac_raw = burn_info.get('mac_address') or (record.get('mac_address') or record.get('mac') if record else None)
+    # 烧录连接失败时无 MAC，上传用 null，不传 "UNKNOWN"
+    if mac_raw in (None, '', 'UNKNOWN'):
+        mac_raw = None
     mac_formatted = mac_raw
     if mac_raw and ':' not in mac_raw and '-' not in mac_raw:
         # AA:BB:CC:DD:EE:FF 格式
@@ -4570,7 +4599,9 @@ def upload_burn_record(burn_info, record=None, config=None):
     # burnTestResult: passed | failed | self_check_failed | key_abnormal
     # 空格(SPACE)=按键测试失败 -> key_abnormal；ESC=用户声明设备异常 -> self_check_failed + button_user_exit
     burn_test_result = "passed" if burn_info.get('success') else "failed"
-    failure_reason = None  # rtc_error | pressure_sensor_error | button_timeout | button_user_exit | factory_config_incomplete | other
+    failure_reason = None  # rtc_error | pressure_sensor_error | button_timeout | button_user_exit | factory_config_incomplete | flash_connect_failed | other
+    if not burn_info.get('success') and not record:
+        failure_reason = burn_info.get('failure_reason') or 'other'
     if record:
         btn = record.get('button_test') or {}
         btn_status = (btn.get('status') if isinstance(btn, dict) else btn) or ''
@@ -4603,6 +4634,12 @@ def upload_burn_record(burn_info, record=None, config=None):
     
     # flowType: P=仅烧录, T=仅自检, P+T=烧录+自检
     flow_type = "P+T" if record else "P"
+    btn_wait = None
+    if record:
+        btn = record.get('button_test') or {}
+        btn_wait = btn.get('wait_seconds') if isinstance(btn, dict) else None
+        if btn_wait is None:
+            btn_wait = record.get('button_wait_seconds')
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
@@ -4617,16 +4654,17 @@ def upload_burn_record(burn_info, record=None, config=None):
         "fromVersion": "N.A",
         "toVersion": to_version,
         "targetFileSizeBytes": target_file_size_bytes,
+        "computerIdentity": computer_identity,
+        "buttonWaitSeconds": btn_wait,
     }
     
     url = f"{base_url}/api/burn-record"
-    print(f"  [upload] 正在上传烧录记录到 {url} ...")
-    if PRINT_DEBUG_LOGS:
-        print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    debug_print(f"  [upload] 正在上传烧录记录到 {url} ...")
+    debug_print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
-        print(f"  [upload] ✓ 烧录记录已上传成功")
+        print(f"  [upload] \033[32m✓ 烧录记录已上传成功\033[0m")
         return True
     except Exception as e:
         print(f"  [upload] ✗ 上传失败: {e}")
@@ -4677,6 +4715,19 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
     except Exception:
         base_url = base_url_raw
     
+    # 电脑身份：仅从映射表查找，找到则为 PC-N，否则为空
+    computer_identity = (cfg.get('computer_identity') or '').strip() or None
+    if not computer_identity and SN_GENERATOR_ENABLED:
+        mapping_path = cfg.get('mac_mapping_path') or 'mac_mapping.json'
+        try:
+            try:
+                cid = get_computer_id_from_serial(mapping_path)
+            except (MacMappingError, HashVerificationError, Exception):
+                cid = get_computer_id_from_mac(None, mapping_path)
+            computer_identity = f"PC-{cid}"
+        except (MacMappingError, HashVerificationError, Exception):
+            computer_identity = None
+    
     mac_raw = record.get('mac_address') or record.get('mac')
     mac_formatted = mac_raw
     if mac_raw and ':' not in str(mac_raw) and '-' not in str(mac_raw):
@@ -4709,6 +4760,7 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
         except Exception:
             pass
     
+    btn_wait = (record.get('button_test') or {}).get('wait_seconds') if isinstance(record.get('button_test'), dict) else record.get('button_wait_seconds')
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
@@ -4720,16 +4772,17 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
         "burnTestResult": burn_test_result,
         "failureReason": failure_reason,
         "flowType": "T",
+        "computerIdentity": computer_identity,
+        "buttonWaitSeconds": btn_wait,
     }
     
     url = f"{base_url}/api/burn-record"
-    print(f"  [upload] 正在上传 T-only 自检记录到 {url} ...")
-    if PRINT_DEBUG_LOGS:
-        print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    debug_print(f"  [upload] 正在上传 T-only 自检记录到 {url} ...")
+    debug_print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
-        print(f"  [upload] ✓ T-only 自检记录已上传成功")
+        print(f"  [upload] \033[32m✓ T-only 自检记录已上传成功\033[0m")
         return True
     except Exception as e:
         print(f"  [upload] ✗ 上传失败: {e}")
@@ -4792,29 +4845,22 @@ def program(flasher, config_state):
         mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
         print(f"  ✓ 从 device_info 获取到 MAC 地址: {mac_address_raw} -> {mac_address}")
     else:
-        # 调试：检查 flasher 的状态
-        if hasattr(flasher, 'procedure_state'):
-            print(f"  ⚠️  调试: procedure_state 存在，但未找到 mac_address")
-            print(f"  ⚠️  调试: procedure_state = {flasher.procedure_state}")
-        else:
-            print(f"  ⚠️  调试: procedure_state 不存在")
-        if hasattr(flasher, 'device_info'):
-            print(f"  ⚠️  调试: device_info 存在，但未找到 mac_address")
-            print(f"  ⚠️  调试: device_info = {flasher.device_info}")
-        else:
-            print(f"  ⚠️  调试: device_info 不存在")
         debug_print(f"  ⚠️  未能从烧录输出中解析 MAC 地址，使用 UNKNOWN")
     
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     firmware_path = flasher.config.get("firmware_path", config_state.get("firmware", ""))
     
     # 存储烧录信息，供 P+T 流程中 test 完成后上传使用
+    failure_reason_flash = None
+    if not success:
+        failure_reason_flash = 'flash_connect_failed' if (mac_address == 'UNKNOWN') else 'other'
     config_state['_last_burn'] = {
         'duration': round(duration, 3),
         'firmware': firmware_path,
         'start_time': ts,
         'mac_address': mac_address,
         'success': bool(success),
+        'failure_reason': failure_reason_flash,
     }
     
     try:
@@ -4843,6 +4889,12 @@ def program(flasher, config_state):
     except Exception:
         # 记录时间失败不影响主流程
         pass
+    
+    if not success and mac_address == 'UNKNOWN':
+        print("\n  💡 提示: 设备未进入烧录模式或未响应。请检查：")
+        print("     1) 设备是否上电、USB 是否插紧")
+        print("     2) 按住 BOOT 键，再短按 RESET 键，进入下载模式后重试")
+        print("     3) 是否有其他程序占用串口")
     
     return success
 
@@ -4987,9 +5039,22 @@ def execute_program_and_test(config_state):
         
         # 2. Program (flash firmware)
         print("\n[Step 2/3] Programming firmware...")
-        if not program(flasher, config_state):
-            _handle_operation_error("Program failed")
-            return False
+        while True:
+            if not program(flasher, config_state):
+                burn_info = config_state.get('_last_burn')
+                if burn_info and flasher.config:
+                    upload_burn_record(burn_info, record=None, config=flasher.config)
+                _handle_operation_error("Program failed")
+                print("\n  是否重试烧录？(Y/N): ", end="")
+                try:
+                    ans = input().strip().upper() or 'N'
+                except (KeyboardInterrupt, EOFError):
+                    ans = 'N'
+                if ans != 'Y':
+                    return False
+                print("\n[Step 2/3] 重新烧录...")
+                continue
+            break
         
         # 3. Test
         print("\n[Step 3/3] Running tests...")
@@ -5080,17 +5145,23 @@ def execute_program_only(config_state):
         
         # 2. Program (flash firmware)
         print("\n[Step 2/2] Programming firmware...")
-        success = program(flasher, config_state)
-        
-        # Program Only：烧录完成后上传烧录记录
-        burn_info = config_state.get('_last_burn')
-        if burn_info and flasher.config:
-            upload_burn_record(burn_info, record=None, config=flasher.config)
-        
-        if success:
-            must_print("\n\033[92m✓ Program completed successfully\033[0m")
-        else:
+        while True:
+            success = program(flasher, config_state)
+            burn_info = config_state.get('_last_burn')
+            if burn_info and flasher.config:
+                upload_burn_record(burn_info, record=None, config=flasher.config)
+            if success:
+                must_print("\n\033[92m✓ Program completed successfully\033[0m")
+                break
             must_print("\n✗ Program failed")
+            print("\n  是否重试烧录？(Y/N): ", end="")
+            try:
+                ans = input().strip().upper() or 'N'
+            except (KeyboardInterrupt, EOFError):
+                ans = 'N'
+            if ans != 'Y':
+                break
+            print("\n[Step 2/2] 重新烧录...")
         
         if unified_log_file:
             unified_log_file.write(f"\n{'='*80}\n")
@@ -5461,6 +5532,7 @@ def execute_test_only(config_state, is_standalone_t_only=False):
         log_file.write(f"[DEBUG STATE] config_state = {repr(config_state)}\n")
         log_file.flush()
     
+    upload_done = False  # 成功路径下在 "Press Enter" 之前先上报，finally 中仅未上报时再执行
     try:
         # Step 1: Use esptool run command to start user code
         normalized_port = normalize_serial_port(port)
@@ -5900,6 +5972,8 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                 # Button was clicked - mark test as passed immediately
                                 button_test_done = True
                                 button_refresh_enabled = False  # Stop dynamic refresh
+                                if button_prompt_time is not None:
+                                    monitored_data['button_wait_seconds'] = round(time.time() - button_prompt_time, 2)
                                 monitored_data['button_test_result'] = 'PASS'
                                 monitored_data['button_pressed'] = True
                                 # Clear the dynamic line and print green pass message
@@ -5970,6 +6044,8 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                 if monitor_button and button_detected and not button_test_done:
                                     button_test_done = True
                                     button_refresh_enabled = False  # Stop dynamic refresh
+                                    if button_prompt_time is not None:
+                                        monitored_data['button_wait_seconds'] = round(time.time() - button_prompt_time, 2)
                                     monitored_data['button_test_result'] = 'PASS'
                                     # Clear the dynamic line and print green pass message
                                     print("\r  \033[K\033[32m✓ 按键测试: OKAY\033[0m")  # \r to return to start, \033[K to clear line
@@ -6356,6 +6432,8 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                     button_test_done = True
                                     button_refresh_enabled = False
                                     button_test_esc_pressed = True
+                                    if button_prompt_time is not None:
+                                        monitored_data['button_wait_seconds'] = round(current_time - button_prompt_time, 2)
                                     monitored_data['button_test_result'] = 'USER_EXIT'
                                     print(f"\r  \033[K\033[31m✗ 按键测试: 用户中断（设备行为异常，按ESC声明）\033[0m", flush=True)
                                     print()
@@ -6368,6 +6446,8 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                 button_test_done = True
                                 button_refresh_enabled = False
                                 button_test_space_pressed = True  # Mark SPACE was pressed - board error
+                                if button_prompt_time is not None:
+                                    monitored_data['button_wait_seconds'] = round(current_time - button_prompt_time, 2)
                                 monitored_data['button_test_result'] = 'BOARD_ERROR'
                                 print(f"\r  \033[K\033[31m✗ 按键测试: 按键测试失败（设备无反应/反应不对，按空格标记）\033[0m", flush=True)
                                 print()
@@ -6769,15 +6849,158 @@ def execute_test_only(config_state, is_standalone_t_only=False):
             except Exception as e:
                 print(f"\n⚠️  警告: 序列号状态更新失败: {e}")
         
+        # 成功路径：先写记录并上报，再等待 Enter（不等到按 Enter 才上报）
+        try:
+            duration = time.time() - overall_start_time
+            ensure_local_data_directory()
+            mac_address = "UNKNOWN"
+            if 'monitored_data' in locals() and monitored_data.get('mac_address'):
+                mac_address_raw = monitored_data['mac_address']
+                mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
+                debug_print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
+            else:
+                print(f"  ⚠️  测试过程中未检测到 MAC 地址")
+            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+            test_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_TEST.json")
+            with open(test_log_path, "a", encoding="utf-8") as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                mode_name = config_state.get("mode_name")
+                if not mode_name:
+                    config_mode = config_state.get("mode") or (config.get("mode") if 'config' in locals() else None)
+                    if config_mode == "develop":
+                        mode_name = "Develop Mode"
+                    elif config_mode == "factory":
+                        mode_name = "Factory Mode"
+                    else:
+                        mode_name = "unknown"
+                record = {
+                    "timestamp": ts,
+                    "mode": mode_name,
+                    "port": port,
+                    "monitor_baud": monitor_baud,
+                    "mac": mac_address,
+                    "duration_sec": round(duration, 3),
+                }
+                if 'monitored_data' in locals():
+                    if monitored_data.get('mac_address'):
+                        record['mac_address'] = monitored_data['mac_address']
+                    record['factory_mode'] = monitored_data.get('factory_mode_detected', False)
+                    rtc_result = {}
+                    if monitored_data.get('rtc_time_input'):
+                        rtc_result['time_sent'] = monitored_data['rtc_time_input']
+                    if monitored_data.get('rtc_time_input_ts') is not None:
+                        rtc_result['time_sent_ts'] = monitored_data['rtc_time_input_ts']
+                    rtc_result['return_success'] = monitored_data.get('rtc_return_success', False)
+                    if monitored_data.get('rtc_time'):
+                        rtc_result["status"] = "pass"
+                        rtc_result["log"] = monitored_data['rtc_time']
+                        if monitored_data.get('rtc_date'):
+                            rtc_result['date'] = monitored_data['rtc_date']
+                        if monitored_data.get('rtc_time_str'):
+                            rtc_result['time'] = monitored_data['rtc_time_str']
+                        record['rtc'] = rtc_result
+                    else:
+                        rtc_result["status"] = "not_detected"
+                        record['rtc'] = rtc_result
+                    if monitored_data.get('pressure_sensor'):
+                        pressure_result = {"status": "pass", "log": monitored_data['pressure_sensor']}
+                        if monitored_data.get('pressure_value_mbar') is not None:
+                            pressure_result['pressure_mbar'] = monitored_data['pressure_value_mbar']
+                        if monitored_data.get('temperature_celsius') is not None:
+                            pressure_result['temperature_celsius'] = monitored_data['temperature_celsius']
+                        record['pressure_sensor'] = pressure_result
+                    else:
+                        record['pressure_sensor'] = {"status": "not_detected"}
+                    button_result = monitored_data.get('button_test_result')
+                    btn_wait = monitored_data.get('button_wait_seconds')
+                    if button_result:
+                        record['button_test'] = {"status": button_result.lower(), "wait_seconds": btn_wait}
+                    else:
+                        record['button_test'] = {"status": "not_detected", "wait_seconds": btn_wait}
+                    if monitored_data.get('hw_version'):
+                        record['hardware_version'] = {
+                            "value": monitored_data['hw_version'].strip(),
+                            "input_success": hw_version_input_success if 'hw_version_input_success' in locals() else False
+                        }
+                    if monitored_data.get('serial_number'):
+                        record['serial_number'] = {
+                            "value": monitored_data['serial_number'],
+                            "input_success": monitored_data.get('serial_number_input_success', False)
+                        }
+                    if monitored_data.get('model_number'):
+                        record['model_number'] = {
+                            "value": monitored_data['model_number'],
+                            "input_success": model_number_input_success if 'model_number_input_success' in locals() else False
+                        }
+                    if monitored_data.get('factory_config_complete'):
+                        record['factory_config_complete'] = {"status": "pass"}
+                    else:
+                        record['factory_config_complete'] = {"status": "not_detected"}
+                    failure_reason = None
+                    btn_status = (button_result or "").lower() if button_result else None
+                    fcc_pass = monitored_data.get('factory_config_complete', False)
+                    burn_success = (config_state.get('_last_burn') or {}).get('success', False)
+                    need_failure_reason = (burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass)) or \
+                        (not burn_success and (btn_status in ('timeout', 'user_exit', 'board_error') or not fcc_pass))
+                    if need_failure_reason:
+                        if monitored_data.get('rtc_error_detected'):
+                            failure_reason = "rtc_error"
+                        elif monitored_data.get('pressure_sensor_error_detected'):
+                            failure_reason = "pressure_sensor_error"
+                        elif btn_status == 'timeout':
+                            failure_reason = "button_timeout"
+                        elif btn_status == 'user_exit':
+                            failure_reason = "button_user_exit"
+                        elif btn_status == 'board_error':
+                            failure_reason = None
+                        elif not fcc_pass:
+                            failure_reason = "factory_config_incomplete"
+                        else:
+                            failure_reason = "other"
+                    if failure_reason:
+                        record['self_check_failure_reason'] = failure_reason
+                json.dump(record, f, ensure_ascii=False, indent=2)
+                f.write("\n\n")
+                upload_ok = False
+                upload_type = None
+                burn_info = config_state.get('_last_burn')
+                if burn_info and config and not is_standalone_t_only:
+                    upload_ok = upload_burn_record(burn_info, record=record, config=config)
+                    upload_type = 'burn'
+                else:
+                    if config and (record.get('mac_address') or record.get('mac')):
+                        upload_ok = upload_self_test_record(
+                            record, config=config, test_start_time=overall_start_time, duration=duration)
+                        upload_type = 't_only'
+                if upload_type:
+                    ts_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    if upload_ok:
+                        msg = f"[{ts_str}] [上传] ✓ 自检记录已上报至产测服务器"
+                    else:
+                        msg = f"[{ts_str}] [上传] ✗ 上报失败（请检查 server_upload 配置或网络）"
+                    print(f"\n  {msg}")
+                    if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                        try:
+                            with open(log_filepath, 'a', encoding='utf-8') as lf:
+                                lf.write(f"\n{msg}\n")
+                                lf.flush()
+                        except Exception:
+                            pass
+            upload_done = True
+        except Exception:
+            pass
+        
         # Play completion sound when test is finished
         if SOUND_ENABLED:
             play_completion_sound()
         
-        print("\nPress Enter to return...")
-        try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            pass
+        # 仅独立 T-only 时在此等待 Enter；P+T 流程由上层在 "Program + Test completed" 后统一等待一次
+        if is_standalone_t_only:
+            print("\nPress Enter to return...")
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                pass
         
         return True
         
@@ -6825,201 +7048,204 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                 pass
             # Don't clear global reference - let parent function handle it
         
-        # 记录整个 Test Only 流程耗时到 MAC_YYMMDD_HHMMSS.json（无论调用来源是 T only 还是 P+T）
-        try:
-            duration = time.time() - overall_start_time
-            # prog/test 统计日志统一写入 local_data 目录
-            ensure_local_data_directory()
-            
-            # 获取 MAC 地址（从测试日志中提取的，测试过程中已解析到 monitored_data）
-            mac_address = "UNKNOWN"
-            if 'monitored_data' in locals() and monitored_data.get('mac_address'):
-                mac_address_raw = monitored_data['mac_address']
-                mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
-                debug_print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
-            else:
-                print(f"  ⚠️  测试过程中未检测到 MAC 地址")
-            
-            # 生成时间戳（文件名使用 YYMMDD_HHMMSS）
-            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
-            # 生成统一命名规则: YYMMDD_HHMMSS_MAC_TEST.json
-            test_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_TEST.json")
-            with open(test_log_path, "a", encoding="utf-8") as f:
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                # 优先使用 mode_name，如果没有则从 config 中获取 mode 并转换
-                mode_name = config_state.get("mode_name")
-                if not mode_name:
-                    # 尝试从 config 中获取 mode
-                    config_mode = config_state.get("mode") or (config.get("mode") if 'config' in locals() else None)
-                    if config_mode == "develop":
-                        mode_name = "Develop Mode"
-                    elif config_mode == "factory":
-                        mode_name = "Factory Mode"
-                    else:
-                        mode_name = "unknown"
-                # 构建测试结果记录，包含所有中间结果
-                record = {
-                    "timestamp": ts,
-                    "mode": mode_name,
-                    "port": port,
-                    "monitor_baud": monitor_baud,
-                    "mac": mac_address,
-                    "duration_sec": round(duration, 3),
-                }
+        # 记录整个 Test Only 流程耗时到 MAC_YYMMDD_HHMMSS.json（成功路径已在 "Press Enter" 前上报，此处仅失败/异常路径执行）
+        if not upload_done:
+            try:
+                duration = time.time() - overall_start_time
+                # prog/test 统计日志统一写入 local_data 目录
+                ensure_local_data_directory()
                 
-                # 添加所有测试中间结果
-                if 'monitored_data' in locals():
-                    # MAC 地址
-                    if monitored_data.get('mac_address'):
-                        record['mac_address'] = monitored_data['mac_address']
-                    
-                    # 工厂模式
-                    record['factory_mode'] = monitored_data.get('factory_mode_detected', False)
-                    
-                    # RTC 测试结果
-                    rtc_result = {}
-                    if monitored_data.get('rtc_time_input'):
-                        rtc_result['time_sent'] = monitored_data['rtc_time_input']
-                    if monitored_data.get('rtc_time_input_ts') is not None:
-                        rtc_result['time_sent_ts'] = monitored_data['rtc_time_input_ts']
-                    rtc_result['return_success'] = monitored_data.get('rtc_return_success', False)
-                    if monitored_data.get('rtc_time'):
-                        rtc_result["status"] = "pass"
-                        rtc_result["log"] = monitored_data['rtc_time']
-                        if monitored_data.get('rtc_date'):
-                            rtc_result['date'] = monitored_data['rtc_date']
-                        if monitored_data.get('rtc_time_str'):
-                            rtc_result['time'] = monitored_data['rtc_time_str']
-                        record['rtc'] = rtc_result
-                    else:
-                        rtc_result["status"] = "not_detected"
-                        record['rtc'] = rtc_result
-                    
-                    # 压力传感器测试结果
-                    if monitored_data.get('pressure_sensor'):
-                        pressure_result = {
-                            "status": "pass",
-                            "log": monitored_data['pressure_sensor']
-                        }
-                        # 如果有提取到压力数值，添加数值
-                        if monitored_data.get('pressure_value_mbar') is not None:
-                            pressure_result['pressure_mbar'] = monitored_data['pressure_value_mbar']
-                        # 如果有提取到温度数值，添加数值
-                        if monitored_data.get('temperature_celsius') is not None:
-                            pressure_result['temperature_celsius'] = monitored_data['temperature_celsius']
-                        record['pressure_sensor'] = pressure_result
-                    else:
-                        record['pressure_sensor'] = {
-                            "status": "not_detected"
-                        }
-                    
-                    # 按键测试结果
-                    button_result = monitored_data.get('button_test_result')
-                    if button_result:
-                        record['button_test'] = {
-                            "status": button_result.lower()  # PASS, TIMEOUT, USER_EXIT
-                        }
-                    else:
-                        record['button_test'] = {
-                            "status": "not_detected"
-                        }
-                    
-                    # 硬件版本
-                    if monitored_data.get('hw_version'):
-                        record['hardware_version'] = {
-                            "value": monitored_data['hw_version'].strip(),
-                            "input_success": hw_version_input_success if 'hw_version_input_success' in locals() else False
-                        }
-                    
-                    # 序列号
-                    if monitored_data.get('serial_number'):
-                        record['serial_number'] = {
-                            "value": monitored_data['serial_number'],
-                            "input_success": monitored_data.get('serial_number_input_success', False)
-                        }
-                    
-                    # 设备号
-                    if monitored_data.get('model_number'):
-                        record['model_number'] = {
-                            "value": monitored_data['model_number'],
-                            "input_success": model_number_input_success if 'model_number_input_success' in locals() else False
-                        }
-                    
-                    # 工厂配置完成状态（只有检测到完整的 Factory Configuration Complete 日志才算通过）
-                    if monitored_data.get('factory_config_complete'):
-                        record['factory_config_complete'] = {
-                            "status": "pass"
-                        }
-                    else:
-                        record['factory_config_complete'] = {
-                            "status": "not_detected"
-                        }
-                    
-                    # 自检失败原因（P+T 和 T-only 均需计算，用于上报）
-                    failure_reason = None
-                    btn_status = (button_result or "").lower() if button_result else None
-                    fcc_pass = monitored_data.get('factory_config_complete', False)
-                    burn_success = (config_state.get('_last_burn') or {}).get('success', False)
-                    need_failure_reason = (burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass)) or \
-                        (not burn_success and (btn_status in ('timeout', 'user_exit', 'board_error') or not fcc_pass))
-                    if need_failure_reason:
-                        if monitored_data.get('rtc_error_detected'):
-                            failure_reason = "rtc_error"
-                        elif monitored_data.get('pressure_sensor_error_detected'):
-                            failure_reason = "pressure_sensor_error"
-                        elif btn_status == 'timeout':
-                            failure_reason = "button_timeout"
-                        elif btn_status == 'user_exit':
-                            failure_reason = "button_user_exit"
-                        elif btn_status == 'board_error':
-                            failure_reason = None  # board_error 用 burnTestResult=key_abnormal 表示
-                        elif not fcc_pass:
-                            failure_reason = "factory_config_incomplete"
-                        else:
-                            failure_reason = "other"
-                    if failure_reason:
-                        record['self_check_failure_reason'] = failure_reason
-                
-                # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
-                json.dump(record, f, ensure_ascii=False, indent=2)
-                f.write("\n\n")
-                
-                # P+T 流程：有 _last_burn 且非独立 T-only 时上传烧录记录；独立 T-only 始终用 flowType=T
-                upload_ok = False
-                upload_type = None  # 'burn' | 't_only' | None
-                burn_info = config_state.get('_last_burn')
-                if burn_info and config and not is_standalone_t_only:
-                    upload_ok = upload_burn_record(burn_info, record=record, config=config)
-                    upload_type = 'burn'
+                # 获取 MAC 地址（从测试日志中提取的，测试过程中已解析到 monitored_data）
+                mac_address = "UNKNOWN"
+                if 'monitored_data' in locals() and monitored_data.get('mac_address'):
+                    mac_address_raw = monitored_data['mac_address']
+                    mac_address = mac_address_raw.replace(':', '').replace('-', '').upper()
+                    debug_print(f"  ✓ 从测试日志中解析到 MAC 地址: {mac_address_raw} -> {mac_address}")
                 else:
-                    # T-only 流程：无烧录时，无论成功或失败均上报
-                    if config and (record.get('mac_address') or record.get('mac')):
-                        upload_ok = upload_self_test_record(
-                            record,
-                            config=config,
-                            test_start_time=overall_start_time,
-                            duration=duration,
-                        )
-                        upload_type = 't_only'
+                    print(f"  ⚠️  测试过程中未检测到 MAC 地址")
+            
+                # 生成时间戳（文件名使用 YYMMDD_HHMMSS）
+                timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+                # 生成统一命名规则: YYMMDD_HHMMSS_MAC_TEST.json
+                test_log_path = os.path.join(LOCAL_DATA_DIR, f"{timestamp}_{mac_address}_TEST.json")
+                with open(test_log_path, "a", encoding="utf-8") as f:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # 优先使用 mode_name，如果没有则从 config 中获取 mode 并转换
+                    mode_name = config_state.get("mode_name")
+                    if not mode_name:
+                        # 尝试从 config 中获取 mode
+                        config_mode = config_state.get("mode") or (config.get("mode") if 'config' in locals() else None)
+                        if config_mode == "develop":
+                            mode_name = "Develop Mode"
+                        elif config_mode == "factory":
+                            mode_name = "Factory Mode"
+                        else:
+                            mode_name = "unknown"
+                    # 构建测试结果记录，包含所有中间结果
+                    record = {
+                        "timestamp": ts,
+                        "mode": mode_name,
+                        "port": port,
+                        "monitor_baud": monitor_baud,
+                        "mac": mac_address,
+                        "duration_sec": round(duration, 3),
+                    }
                 
-                # 在日志区和终端显示上传结果
-                if upload_type:
-                    ts_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                    if upload_ok:
-                        msg = f"[{ts_str}] [上传] ✓ 自检记录已上报至产测服务器"
+                    # 添加所有测试中间结果
+                    if 'monitored_data' in locals():
+                        # MAC 地址
+                        if monitored_data.get('mac_address'):
+                            record['mac_address'] = monitored_data['mac_address']
+                    
+                        # 工厂模式
+                        record['factory_mode'] = monitored_data.get('factory_mode_detected', False)
+                    
+                        # RTC 测试结果
+                        rtc_result = {}
+                        if monitored_data.get('rtc_time_input'):
+                            rtc_result['time_sent'] = monitored_data['rtc_time_input']
+                        if monitored_data.get('rtc_time_input_ts') is not None:
+                            rtc_result['time_sent_ts'] = monitored_data['rtc_time_input_ts']
+                        rtc_result['return_success'] = monitored_data.get('rtc_return_success', False)
+                        if monitored_data.get('rtc_time'):
+                            rtc_result["status"] = "pass"
+                            rtc_result["log"] = monitored_data['rtc_time']
+                            if monitored_data.get('rtc_date'):
+                                rtc_result['date'] = monitored_data['rtc_date']
+                            if monitored_data.get('rtc_time_str'):
+                                rtc_result['time'] = monitored_data['rtc_time_str']
+                            record['rtc'] = rtc_result
+                        else:
+                            rtc_result["status"] = "not_detected"
+                            record['rtc'] = rtc_result
+                    
+                        # 压力传感器测试结果
+                        if monitored_data.get('pressure_sensor'):
+                            pressure_result = {
+                                "status": "pass",
+                                "log": monitored_data['pressure_sensor']
+                            }
+                            # 如果有提取到压力数值，添加数值
+                            if monitored_data.get('pressure_value_mbar') is not None:
+                                pressure_result['pressure_mbar'] = monitored_data['pressure_value_mbar']
+                            # 如果有提取到温度数值，添加数值
+                            if monitored_data.get('temperature_celsius') is not None:
+                                pressure_result['temperature_celsius'] = monitored_data['temperature_celsius']
+                            record['pressure_sensor'] = pressure_result
+                        else:
+                            record['pressure_sensor'] = {
+                                "status": "not_detected"
+                            }
+                    
+                        # 按键测试结果
+                        button_result = monitored_data.get('button_test_result')
+                        if button_result:
+                            record['button_test'] = {
+                                "status": button_result.lower(),  # PASS, TIMEOUT, USER_EXIT
+                                "wait_seconds": monitored_data.get('button_wait_seconds')
+                            }
+                        else:
+                            record['button_test'] = {
+                                "status": "not_detected",
+                                "wait_seconds": monitored_data.get('button_wait_seconds')
+                            }
+                    
+                        # 硬件版本
+                        if monitored_data.get('hw_version'):
+                            record['hardware_version'] = {
+                                "value": monitored_data['hw_version'].strip(),
+                                "input_success": hw_version_input_success if 'hw_version_input_success' in locals() else False
+                            }
+                    
+                        # 序列号
+                        if monitored_data.get('serial_number'):
+                            record['serial_number'] = {
+                                "value": monitored_data['serial_number'],
+                                "input_success": monitored_data.get('serial_number_input_success', False)
+                            }
+                    
+                        # 设备号
+                        if monitored_data.get('model_number'):
+                            record['model_number'] = {
+                                "value": monitored_data['model_number'],
+                                "input_success": model_number_input_success if 'model_number_input_success' in locals() else False
+                            }
+                    
+                        # 工厂配置完成状态（只有检测到完整的 Factory Configuration Complete 日志才算通过）
+                        if monitored_data.get('factory_config_complete'):
+                            record['factory_config_complete'] = {
+                                "status": "pass"
+                            }
+                        else:
+                            record['factory_config_complete'] = {
+                                "status": "not_detected"
+                            }
+                    
+                        # 自检失败原因（P+T 和 T-only 均需计算，用于上报）
+                        failure_reason = None
+                        btn_status = (button_result or "").lower() if button_result else None
+                        fcc_pass = monitored_data.get('factory_config_complete', False)
+                        burn_success = (config_state.get('_last_burn') or {}).get('success', False)
+                        need_failure_reason = (burn_success and (btn_status in ('timeout', 'user_exit') or not fcc_pass)) or \
+                            (not burn_success and (btn_status in ('timeout', 'user_exit', 'board_error') or not fcc_pass))
+                        if need_failure_reason:
+                            if monitored_data.get('rtc_error_detected'):
+                                failure_reason = "rtc_error"
+                            elif monitored_data.get('pressure_sensor_error_detected'):
+                                failure_reason = "pressure_sensor_error"
+                            elif btn_status == 'timeout':
+                                failure_reason = "button_timeout"
+                            elif btn_status == 'user_exit':
+                                failure_reason = "button_user_exit"
+                            elif btn_status == 'board_error':
+                                failure_reason = None  # board_error 用 burnTestResult=key_abnormal 表示
+                            elif not fcc_pass:
+                                failure_reason = "factory_config_incomplete"
+                            else:
+                                failure_reason = "other"
+                        if failure_reason:
+                            record['self_check_failure_reason'] = failure_reason
+                
+                    # 采用多行缩进格式，便于人工阅读；每条记录之间空一行
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+                    f.write("\n\n")
+                
+                    # P+T 流程：有 _last_burn 且非独立 T-only 时上传烧录记录；独立 T-only 始终用 flowType=T
+                    upload_ok = False
+                    upload_type = None  # 'burn' | 't_only' | None
+                    burn_info = config_state.get('_last_burn')
+                    if burn_info and config and not is_standalone_t_only:
+                        upload_ok = upload_burn_record(burn_info, record=record, config=config)
+                        upload_type = 'burn'
                     else:
-                        msg = f"[{ts_str}] [上传] ✗ 上报失败（请检查 server_upload 配置或网络）"
-                    print(f"\n  {msg}")
-                    if log_file_created_here and 'log_filepath' in locals() and log_filepath:
-                        try:
-                            with open(log_filepath, 'a', encoding='utf-8') as lf:
-                                lf.write(f"\n{msg}\n")
-                                lf.flush()
-                        except Exception:
-                            pass
-        except Exception:
-            # 记录失败不影响主流程
-            pass
+                        # T-only 流程：无烧录时，无论成功或失败均上报
+                        if config and (record.get('mac_address') or record.get('mac')):
+                            upload_ok = upload_self_test_record(
+                                record,
+                                config=config,
+                                test_start_time=overall_start_time,
+                                duration=duration,
+                            )
+                            upload_type = 't_only'
+                
+                    # 在日志区和终端显示上传结果
+                    if upload_type:
+                        ts_str = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        if upload_ok:
+                            msg = f"[{ts_str}] [上传] ✓ 自检记录已上报至产测服务器"
+                        else:
+                            msg = f"[{ts_str}] [上传] ✗ 上报失败（请检查 server_upload 配置或网络）"
+                        print(f"\n  {msg}")
+                        if log_file_created_here and 'log_filepath' in locals() and log_filepath:
+                            try:
+                                with open(log_filepath, 'a', encoding='utf-8') as lf:
+                                    lf.write(f"\n{msg}\n")
+                                    lf.flush()
+                            except Exception:
+                                pass
+            except Exception:
+                # 记录失败不影响主流程
+                pass
 
 
 def menu_start_flash(config_state):
