@@ -4515,13 +4515,14 @@ def basic_check_uart(flasher, config_state):
     return flasher._step_check_uart(check_uart_step)
 
 
-def upload_burn_record(burn_info, record=None, config=None):
+def upload_burn_record(burn_info, record=None, config=None, operation_duration_override=None):
     """上传烧录记录到产测服务器（bog-test-server API）
     
     Args:
         burn_info: 烧录信息 dict，含 duration, firmware, start_time, mac_address, success
         record: 测试结果 record（P+T 时有），含 serial_number, rtc, button_test 等
         config: 配置 dict，含 server_upload 配置
+        operation_duration_override: 可选；若提供则作为 burnDurationSeconds（用于 P+T 上传总耗时）
     
     Returns:
         bool: 上传成功返回 True，否则 False（失败不抛异常）
@@ -4640,11 +4641,13 @@ def upload_burn_record(burn_info, record=None, config=None):
         btn_wait = btn.get('wait_seconds') if isinstance(btn, dict) else None
         if btn_wait is None:
             btn_wait = record.get('button_wait_seconds')
+    # 耗时：P=烧录耗时，P+T=总耗时（由 operation_duration_override 传入）
+    duration_sec = operation_duration_override if operation_duration_override is not None else burn_info.get('duration')
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
         "burnStartTime": burn_info.get('start_time'),
-        "burnDurationSeconds": burn_info.get('duration'),
+        "burnDurationSeconds": round(duration_sec, 3) if duration_sec is not None else None,
         "binFileName": bin_name,
         "deviceWrittenTimestamp": rtc_time_sent,
         "deviceWrittenSerialNumber": sn,
@@ -4977,13 +4980,14 @@ def test(flasher, config_state):
     config = flasher.config
     
     # 统一使用 execute_test_only() 的测试流程
-    # 构造 Test Only 所需的 config_state（传递 _last_burn 供 P+T 完成后上传）
+    # 构造 Test Only 所需的 config_state（传递 _last_burn 供 P+T 完成后上传；_p_t_start_time 供 P+T 总耗时）
     test_state = {
         'port': config_state.get('port') or config.get('serial_port'),
         'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
         'config_path': flasher.config_path,
         'mode_name': config_state.get('mode_name', 'Test Mode'),
         '_last_burn': config_state.get('_last_burn'),
+        '_p_t_start_time': config_state.get('_p_t_start_time'),
     }
     
     return execute_test_only(test_state)
@@ -5031,6 +5035,8 @@ def execute_program_and_test(config_state):
         unified_log_file = None
     
     try:
+        # P+T 总耗时起点（用于上报 operation time = 烧录+自检总时间）
+        config_state['_p_t_start_time'] = time.time()
         # 1. Basic check UART
         print("\n[Step 1/3] Checking UART...")
         if not basic_check_uart(flasher, config_state):
@@ -6970,10 +6976,13 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                 upload_type = None
                 burn_info = config_state.get('_last_burn')
                 if burn_info and config and not is_standalone_t_only:
-                    upload_ok = upload_burn_record(burn_info, record=record, config=config)
+                    pt_start = config_state.get('_p_t_start_time')
+                    operation_override = round(time.time() - pt_start, 3) if pt_start is not None else None
+                    upload_ok = upload_burn_record(burn_info, record=record, config=config, operation_duration_override=operation_override)
                     upload_type = 'burn'
                 else:
-                    if config and (record.get('mac_address') or record.get('mac')):
+                    # T-only：有 config 即上报（无 MAC 时传 macAddress=null，保证服务器有 T 记录）
+                    if config:
                         upload_ok = upload_self_test_record(
                             record, config=config, test_start_time=overall_start_time, duration=duration)
                         upload_type = 't_only'
@@ -7220,11 +7229,13 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                     upload_type = None  # 'burn' | 't_only' | None
                     burn_info = config_state.get('_last_burn')
                     if burn_info and config and not is_standalone_t_only:
-                        upload_ok = upload_burn_record(burn_info, record=record, config=config)
+                        pt_start = config_state.get('_p_t_start_time')
+                        operation_override = round(time.time() - pt_start, 3) if pt_start is not None else None
+                        upload_ok = upload_burn_record(burn_info, record=record, config=config, operation_duration_override=operation_override)
                         upload_type = 'burn'
                     else:
-                        # T-only 流程：无烧录时，无论成功或失败均上报
-                        if config and (record.get('mac_address') or record.get('mac')):
+                        # T-only 流程：无烧录时，有 config 即上报（无 MAC 时传 null，保证服务器有 T 记录）
+                        if config:
                             upload_ok = upload_self_test_record(
                                 record,
                                 config=config,
