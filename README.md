@@ -156,11 +156,21 @@ Configuration files contain the following main items:
 - `monitor_baud`: Baud rate used for log monitoring during self-test
 - `device_code_rule`: Rule to generate serial number / device code when not manually entered (e.g., `SN: YYMMDD+序号`)
 
+## 产测服务器（Server Integration）
+
+烧录/自检完成后可上报记录到 BOG 产测服务，用于汇总与查询：
+
+- **服务端项目**：[bog-test-server/](bog-test-server/)（FastAPI，SQLite，Dashboard）
+- **API 规范**：[bog-test-server/API_SPEC.md](bog-test-server/API_SPEC.md)（供其他工程/Agent 集成）
+
+客户端在 `config_develop.json` / `config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。
+
 ## Directory Structure
 
 ```
 .
 ├── firmware/              # Firmware folder, place .bin firmware files
+├── bog-test-server/       # BOG 产测数据服务（烧录/产测/PCBA 上报与查询）
 ├── venv/                  # Virtual environment (when using virtual environment)
 ├── config.json            # Default configuration file
 ├── config_develop.json    # Development mode config (unencrypted)
