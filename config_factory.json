@@ -188,11 +188,13 @@
                 ],
                 "rtc_error": [
                   "RTC error during factory configuration",
-                  "RTC error"
+                  "RTC error",
+                  "Failed to initialize RTC"
                 ],
                 "pressure_sensor_error": [
                   "Pressure Sensor error during factory configuration",
-                  "Pressure Sensor error"
+                  "Pressure Sensor error",
+                  "Failed to read pressure sensor"
                 ]
               },
               "extract_mac": true,
