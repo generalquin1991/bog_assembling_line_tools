@@ -235,6 +235,132 @@ def ensure_local_data_directory():
     return LOCAL_DATA_DIR
 
 
+# ---------- 上传失败队列与后台重试（ping + 持续上传） ----------
+UPLOAD_QUEUE_FILE = os.path.join(LOCAL_DATA_DIR, "upload_pending_queue.json")
+UPLOAD_QUEUE_MAX_ITEMS = 500
+_upload_queue_lock = threading.Lock()
+_upload_retry_thread_started = False
+
+
+def _upload_queue_load():
+    """加载待上传队列（加锁）。返回 {"base_url": str, "retry_ping_interval_sec": int, "items": [{"url": str, "payload": dict, "added_at": str}]}"""
+    with _upload_queue_lock:
+        ensure_local_data_directory()
+        path = UPLOAD_QUEUE_FILE
+        if not os.path.isfile(path):
+            return {"base_url": "", "retry_ping_interval_sec": 60, "items": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data.get("items"), list):
+                data["items"] = []
+            return data
+        except Exception:
+            return {"base_url": "", "retry_ping_interval_sec": 60, "items": []}
+
+
+def _upload_queue_save(data):
+    """保存待上传队列（加锁）。"""
+    with _upload_queue_lock:
+        ensure_local_data_directory()
+        path = UPLOAD_QUEUE_FILE
+        items = data.get("items") or []
+        if len(items) > UPLOAD_QUEUE_MAX_ITEMS:
+            data["items"] = items[-UPLOAD_QUEUE_MAX_ITEMS:]
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=0)
+        except Exception:
+            pass
+
+
+def _upload_queue_enqueue(base_url, payload, interval_sec=60):
+    """上传失败时入队。若队列非空会触发后台重试线程（仅启动一次）。"""
+    global _upload_retry_thread_started
+    url = (base_url.rstrip("/") + "/api/burn-record") if base_url else ""
+    if not url or not payload:
+        return
+    data = _upload_queue_load()
+    data.setdefault("base_url", base_url.rstrip("/") if base_url else "")
+    data.setdefault("retry_ping_interval_sec", interval_sec)
+    data.setdefault("items", [])
+    data["items"].append({
+        "url": url,
+        "payload": payload,
+        "added_at": datetime.now().isoformat(),
+    })
+    _upload_queue_save(data)
+    if not _upload_retry_thread_started:
+        _upload_retry_thread_started = True
+        t = threading.Thread(target=_upload_retry_worker, daemon=True)
+        t.start()
+        debug_print("  [upload] 已启动后台重试线程（按网络状态持续尝试上传队列）")
+
+
+def _upload_ping_server(base_url, timeout=5):
+    """GET 轻量接口判断服务器是否可达。"""
+    if not REQUESTS_AVAILABLE or not base_url:
+        return False
+    url = (base_url.rstrip("/") + "/api/deploy-info") if base_url else ""
+    if not url:
+        return False
+    try:
+        r = requests.get(url, timeout=timeout)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _upload_retry_worker():
+    """后台线程：按间隔 ping 服务器，可达时从队列取出一条条上传直到失败或队列空。"""
+    while True:
+        data = _upload_queue_load()
+        interval = max(15, data.get("retry_ping_interval_sec", 60))
+        items = data.get("items") or []
+        base_url = (data.get("base_url") or "").strip()
+        if not items or not base_url:
+            time.sleep(interval)
+            continue
+        if not _upload_ping_server(base_url, timeout=5):
+            time.sleep(interval)
+            continue
+        # 逐条上传，失败则放回队首并退出本轮
+        uploaded_any = False
+        while items:
+            item = items.pop(0)
+            url = item.get("url") or (base_url.rstrip("/") + "/api/burn-record")
+            payload = item.get("payload")
+            if not payload:
+                _upload_queue_save(data)
+                continue
+            try:
+                r = requests.post(url, json=payload, timeout=10)
+                r.raise_for_status()
+                uploaded_any = True
+                data["items"] = items
+                _upload_queue_save(data)
+            except Exception:
+                items.insert(0, item)
+                data["items"] = items
+                _upload_queue_save(data)
+                break
+        time.sleep(interval)
+
+
+def _maybe_start_upload_retry_thread(config, base_url):
+    """若待上传队列非空且重试线程未启动，则启动（例如进程重启后队列中仍有未上传记录）。"""
+    global _upload_retry_thread_started
+    if _upload_retry_thread_started:
+        return
+    data = _upload_queue_load()
+    if not (data.get("items") and data.get("base_url")):
+        return
+    _upload_retry_thread_started = True
+    t = threading.Thread(target=_upload_retry_worker, daemon=True)
+    t.start()
+    debug_print("  [upload] 已启动后台重试线程（队列中有待上传记录）")
+
+
 def get_log_file_path(filename):
     """获取日志文件的完整路径"""
     ensure_log_directory()
@@ -4664,6 +4790,8 @@ def upload_burn_record(burn_info, record=None, config=None, operation_duration_o
     url = f"{base_url}/api/burn-record"
     debug_print(f"  [upload] 正在上传烧录记录到 {url} ...")
     debug_print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    # 若队列中已有待上传记录且重试线程未启动，则启动后台重试（例如进程重启后）
+    _maybe_start_upload_retry_thread(config, base_url)
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
@@ -4678,6 +4806,9 @@ def upload_burn_record(burn_info, record=None, config=None, operation_duration_o
                 print(f"  [upload] 响应: {err_body}")
             except Exception:
                 pass
+        interval = (config or {}).get('server_upload', {}).get('retry_ping_interval_sec', 60)
+        _upload_queue_enqueue(base_url, payload, interval_sec=interval)
+        print("  [upload] 已加入待上传队列，将根据网络状态持续重试")
         return False
 
 
@@ -4782,6 +4913,7 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
     url = f"{base_url}/api/burn-record"
     debug_print(f"  [upload] 正在上传 T-only 自检记录到 {url} ...")
     debug_print(f"  [upload] payload: {json.dumps(payload, ensure_ascii=False)}")
+    _maybe_start_upload_retry_thread(config, base_url)
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
@@ -4789,6 +4921,9 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
         return True
     except Exception as e:
         print(f"  [upload] ✗ 上传失败: {e}")
+        interval = (config or {}).get('server_upload', {}).get('retry_ping_interval_sec', 60)
+        _upload_queue_enqueue(base_url, payload, interval_sec=interval)
+        print("  [upload] 已加入待上传队列，将根据网络状态持续重试")
         return False
 
 
