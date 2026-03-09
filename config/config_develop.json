@@ -15,7 +15,7 @@
   "reset_after_flash": false,
   "encrypt": false,
   "secure_boot": false,
-  "version_string": "P02V02R00",
+  "version_string": "P02V02R01",
   "mode_number": "20065",
   "batch": "SN: YYMMDD+序号",
   "print_device_logs": true,
