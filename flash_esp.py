@@ -3647,64 +3647,73 @@ def menu_settings(config_state, mode_type):
 
 def menu_set_ports(config_state):
     """Set serial port"""
-    clear_screen()
-    print_header("Set Serial Port", 80)
-    
-    # Load default configuration (from current mode config)
-    default_config = load_default_config(config_state.get('config_path', ''))
-    current_port = config_state.get('port', default_config.get('serial_port'))
-    
-    # Read default serial port from config.json (only for displaying "Use default serial port" option)
-    base_config_path = 'config.json'
-    default_port = None
-    if os.path.exists(base_config_path):
-        try:
-            with open(base_config_path, 'r', encoding='utf-8') as f:
-                base_config = json.load(f)
-                default_port = base_config.get('serial_port')
-        except:
-            pass
-    
-    # Display current configuration
-    print_section_header("Current Configuration", 80)
-    print()
-    config_items = [("Current Serial Port", current_port if current_port else 'Not set')]
-    if default_port:
-        config_items.append(("Default Serial Port (config.json)", default_port))
-    print_config_table(config_items, 80)
-    print()
-    
-    # List available serial ports (filtered according to config)
-    all_ports = serial.tools.list_ports.comports()
-    # Load config to get filter rules
-    filter_config = load_default_config(config_state.get('config_path', ''))
-    ports = filter_serial_ports(all_ports, filter_config)
-    port_choices = []
-    
-    if ports:
-        port_choices = [(f"{port.device} - {port.description}", port.device) for port in ports]
-    
-    # Only show "Use default serial port" option if serial_port exists in config.json
-    if default_port:
-        port_choices.append(('Use default serial port (config.json)', default_port))
-    port_choices.append(('Back', 'back'))
-    
-    port_question = [
-        inquirer.List('port',
-                     message="Please select serial port device",
-                     choices=port_choices,
-                     default=current_port if current_port in [p[1] for p in port_choices] else None,
-                     carousel=True)  # Enable circular navigation
-    ]
-    
-    answer = inquirer.prompt(port_question)
-    if not answer or answer['port'] == 'back':
+    # Use a loop so that user can refresh port list without leaving this menu
+    while True:
+        clear_screen()
+        print_header("Set Serial Port", 80)
+        
+        # Load default configuration (from current mode config)
+        default_config = load_default_config(config_state.get('config_path', ''))
+        current_port = config_state.get('port', default_config.get('serial_port'))
+        
+        # Read default serial port from config.json (only for displaying "Use default serial port" option)
+        base_config_path = 'config.json'
+        default_port = None
+        if os.path.exists(base_config_path):
+            try:
+                with open(base_config_path, 'r', encoding='utf-8') as f:
+                    base_config = json.load(f)
+                    default_port = base_config.get('serial_port')
+            except:
+                pass
+        
+        # Display current configuration
+        print_section_header("Current Configuration", 80)
+        print()
+        config_items = [("Current Serial Port", current_port if current_port else 'Not set')]
+        if default_port:
+            config_items.append(("Default Serial Port (config.json)", default_port))
+        print_config_table(config_items, 80)
+        print()
+        
+        # List available serial ports (filtered according to config)
+        all_ports = serial.tools.list_ports.comports()
+        # Load config to get filter rules
+        filter_config = load_default_config(config_state.get('config_path', ''))
+        ports = filter_serial_ports(all_ports, filter_config)
+        port_choices = []
+        
+        if ports:
+            port_choices = [(f"{port.device} - {port.description}", port.device) for port in ports]
+        
+        # Only show "Use default serial port" option if serial_port exists in config.json
+        if default_port:
+            port_choices.append(('Use default serial port (config.json)', default_port))
+        # Add refresh option to re-enumerate ports without leaving this menu
+        port_choices.append(('Refresh ports', '__refresh__'))
+        port_choices.append(('Back', 'back'))
+        
+        port_question = [
+            inquirer.List(
+                'port',
+                message="Please select serial port device",
+                choices=port_choices,
+                default=current_port if current_port in [p[1] for p in port_choices] else None,
+                carousel=True  # Enable circular navigation
+            )
+        ]
+        
+        answer = inquirer.prompt(port_question)
+        if not answer or answer['port'] == 'back':
+            return config_state
+        if answer['port'] == '__refresh__':
+            # Simply loop again to rebuild the port list
+            continue
+        
+        config_state['port'] = answer['port']
+        print(f"\n✓ Serial port selected: {config_state['port']}")
+        
         return config_state
-    
-    config_state['port'] = answer['port']
-    print(f"\n✓ Serial port selected: {config_state['port']}")
-    
-    return config_state
 
 
 def menu_set_flash_baud(config_state):
