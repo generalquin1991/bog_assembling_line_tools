@@ -1,7 +1,7 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.wchusbserial210",
+  "serial_port": "/dev/cu.wchusbserial10",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_4_2.bin",
   "flash_mode": "dio",
@@ -34,7 +34,7 @@
     "HUAWEI",
     "n/a"
   ],
-  "baud_rate": 230400,
+  "baud_rate": 2000000,
   "monitor_baud": 78400,
   "prompt_refresh_interval_ms": 50,
   "serial_read_timeout_s": 0.1,

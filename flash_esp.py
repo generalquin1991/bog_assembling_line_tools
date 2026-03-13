@@ -4878,9 +4878,18 @@ def upload_burn_record(burn_info, record=None, config=None, operation_duration_o
             btn_wait = record.get('button_wait_seconds')
     # 耗时：P=烧录耗时，P+T=总耗时（由 operation_duration_override 传入）
     duration_sec = operation_duration_override if operation_duration_override is not None else burn_info.get('duration')
+    # 硬件版本（可选）：P+T 时从 record.hardware_version 取
+    device_hardware_revision = None
+    if record:
+        hw_obj = record.get('hardware_version')
+        if isinstance(hw_obj, dict) and hw_obj.get('value'):
+            device_hardware_revision = (hw_obj.get('value') or '').strip() or None
+        elif isinstance(hw_obj, str) and hw_obj.strip():
+            device_hardware_revision = hw_obj.strip()
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
+        "deviceHardwareRevision": device_hardware_revision,
         "burnStartTime": burn_info.get('start_time'),
         "burnDurationSeconds": round(duration_sec, 3) if duration_sec is not None else None,
         "binFileName": bin_name,
@@ -5004,9 +5013,17 @@ def upload_self_test_record(record, config=None, test_start_time=None, duration=
             pass
     
     btn_wait = (record.get('button_test') or {}).get('wait_seconds') if isinstance(record.get('button_test'), dict) else record.get('button_wait_seconds')
+    # 硬件版本（可选）：从 record.hardware_version 取
+    hw_obj = record.get('hardware_version')
+    device_hardware_revision = None
+    if isinstance(hw_obj, dict) and hw_obj.get('value'):
+        device_hardware_revision = (hw_obj.get('value') or '').strip() or None
+    elif isinstance(hw_obj, str) and hw_obj.strip():
+        device_hardware_revision = hw_obj.strip()
     payload = {
         "deviceSerialNumber": str(device_serial),
         "macAddress": mac_formatted or mac_raw,
+        "deviceHardwareRevision": device_hardware_revision,
         "burnStartTime": burn_start_time,
         "burnDurationSeconds": round(duration, 3) if duration is not None else None,
         "binFileName": None,
