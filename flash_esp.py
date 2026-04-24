@@ -5,6 +5,7 @@ ESP自动烧录工具
 支持ESP32/ESP8266自动烧录固件
 """
 
+import copy
 import json
 import os
 import sys
@@ -834,12 +835,56 @@ def save_to_csv(device_info, csv_file='device_records.csv'):
         return False
 
 
+def _deep_merge_dict(base, overlay):
+    """将 overlay 深度合并进 base 的副本（子 dict 递归合并，其余覆盖）。"""
+    out = copy.deepcopy(base or {})
+    for k, v in (overlay or {}).items():
+        if k in out and isinstance(out.get(k), dict) and isinstance(v, dict):
+            out[k] = _deep_merge_dict(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def resolve_station_profiles_config(raw_config, station_id=None):
+    """从原始 JSON 得到运行时配置：去掉 station_profiles，并按需合并某一工位覆盖。
+
+    - 无 station_profiles：原样返回（副本）。
+    - 有 station_profiles 但未指定 station_id：仅去掉 station_profiles，使用顶层字段（兼容单治具/TUI）。
+    - 指定 station_id：合并 station_profiles[station_id] 到顶层后再去掉 station_profiles。
+    """
+    cfg = copy.deepcopy(raw_config or {})
+    profiles = cfg.pop('station_profiles', None)
+    if station_id and (not profiles or not isinstance(profiles, dict)):
+        print("警告: 已指定 --station，但配置中无有效的 station_profiles 对象，已忽略工位合并。")
+        return cfg
+    if not profiles or not isinstance(profiles, dict):
+        return cfg
+    if station_id is None:
+        return cfg
+    if station_id not in profiles:
+        keys = ', '.join(sorted(profiles.keys()))
+        print(f"错误: --station {station_id!r} 不在 station_profiles 中。有效键: {keys}")
+        sys.exit(1)
+    overlay = profiles[station_id]
+    if not isinstance(overlay, dict):
+        print(f"错误: station_profiles[{station_id!r}] 必须是 JSON 对象")
+        sys.exit(1)
+    return _deep_merge_dict(cfg, overlay)
+
+
 class ESPFlasher:
     """ESP烧录器类"""
     
-    def __init__(self, config_path="config.json"):
-        """初始化烧录器，加载配置"""
+    def __init__(self, config_path="config.json", station_id=None):
+        """初始化烧录器，加载配置
+
+        Args:
+            config_path: JSON 配置文件路径
+            station_id: 若 JSON 内含 station_profiles，传入键名则合并该工位覆盖项后再使用
+        """
         self.config_path = config_path
+        self.station_id = station_id
         self.config = self.load_config()
         self.validate_config()
         # 创建会话ID用于关联所有日志
@@ -880,7 +925,9 @@ class ESPFlasher:
                     except Exception as e:
                         # 如果读取config.json失败，忽略错误，继续使用当前配置
                         pass
-            
+
+            config = resolve_station_profiles_config(config, self.station_id)
+
             return config
         except json.JSONDecodeError as e:
             print(f"错误: 配置文件格式错误: {e}")
@@ -7884,6 +7931,12 @@ def main():
                        help='Config file path (default: config.json). Non-default path is used even with -m.')
     parser.add_argument('-m', '--mode', choices=['develop', 'factory'],
                        help='Flash mode: develop (develop mode, no encryption) or factory (factory mode, encrypted)')
+    parser.add_argument(
+        '--station',
+        default=None,
+        metavar='KEY',
+        help='多治具共用一份 JSON 时，取 station_profiles 中该键的覆盖项与顶层配置深度合并',
+    )
     parser.add_argument('-p', '--port', help='Serial port device path (overrides config file)')
     parser.add_argument('-f', '--firmware', help='Firmware file path (overrides config file)')
     parser.add_argument('-l', '--list', action='store_true',
@@ -7907,7 +7960,7 @@ def main():
     # 检查是否有除了默认config之外的其他参数
     has_other_args = any([
         args.mode, args.port, args.firmware, args.list,
-        args.no_verify, args.no_reset
+        args.no_verify, args.no_reset, args.station,
     ])
     
     # 如果config不是默认值，也算有参数
@@ -7938,12 +7991,12 @@ def main():
     
     # 列出串口
     if args.list:
-        flasher = ESPFlasher(config_path)
+        flasher = ESPFlasher(config_path, station_id=args.station)
         flasher.list_ports()
         return
     
     # 创建烧录器实例
-    flasher = ESPFlasher(config_path)
+    flasher = ESPFlasher(config_path, station_id=args.station)
     
     # 覆盖配置参数
     if args.port:

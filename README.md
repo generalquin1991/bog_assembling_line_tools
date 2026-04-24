@@ -131,19 +131,35 @@ When `-c` / `--config` is not the default `config.json`, that file is always use
 
 ### One Mac, two fixtures (two terminals)
 
-Use **two terminal windows** and **two config files** (copy from `config/config_develop.json` or `config_factory.json`), differing at least by:
+**Preferred: one JSON file** with shared settings and a `station_profiles` object (per-fixture overrides). Top-level fields are the defaults (e.g. default `serial_port`). Each key under `station_profiles` is a station id; its value is merged **on top** of the rest of the file (nested dicts such as `server_upload` are deep-merged). The `station_profiles` key is not left in the runtime config.
 
-- `serial_port` and/or pass `-p` per session
-- `server_upload.computer_identity` so burn records are distinguishable on the BOG server
+Add to your config (example):
 
-Example:
-
-```bash
-python flash_esp.py -c config/jig_a.json -p /dev/cu.wchusbserial10
-python flash_esp.py -c config/jig_b.json -p /dev/cu.wchusbserial11
+```json
+"station_profiles": {
+  "jig_a": {
+    "serial_port": "/dev/cu.wchusbserial10",
+    "server_upload": { "computer_identity": "LINE1-JIGA" }
+  },
+  "jig_b": {
+    "serial_port": "/dev/cu.wchusbserial11",
+    "server_upload": { "computer_identity": "LINE1-JIGB" }
+  }
+}
 ```
 
-Serial number generation (`sn_generator.generate_sn`) serializes on the **same** `all_sn_logs.json` lock as the log append when `log_path` is shared; use one shared log/config pair per Mac unless you add separate SN state files and wire them through the tool.
+Run two terminals with the **same** `-c` path and different `--station`:
+
+```bash
+python flash_esp.py -c config/config_factory.json --station jig_a
+python flash_esp.py -c config/config_factory.json --station jig_b
+```
+
+You can still use `-p` to override `serial_port` for that run.
+
+**Alternative:** two separate small JSON files if you prefer not to edit the shared file.
+
+Serial number generation (`sn_generator.generate_sn`) serializes on the **same** `all_sn_logs.json` lock as the log append when `log_path` is shared; use one shared SN state per Mac unless you add separate SN files and wire them through the tool.
 
 ## Mode Description
 
