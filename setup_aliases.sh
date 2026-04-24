@@ -12,6 +12,10 @@ else
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
+# 说明：start_bog / flash_* 的「项目根目录」= 本文件所在目录。
+# 若 ~/.zshrc 里 source 的是另一个路径（例如 assembling_line_tools），
+# 则别名永远操作那个目录，不会自动指向 assembling_line_tools_recovered。
+
 # 设置虚拟环境的别名（自动创建并安装依赖）
 setup_bog() {
     cd "$SCRIPT_DIR" || return 1
@@ -205,9 +209,14 @@ help_bog() {
     echo "  - 所有依赖都安装在虚拟环境中，不会影响系统Python"
     echo "  - 看到 (venv) 提示符表示虚拟环境已激活"
     echo "  - 运行 'deactivate' 退出虚拟环境"
+    echo ""
+    echo "多份工程 / 换目录后「不好用」时:"
+    echo "  - 别名绑定的是「你 source 的那份 setup_aliases.sh」所在文件夹"
+    echo "  - 请编辑 ~/.zshrc：把 source 路径改成当前要用的仓库，再 source ~/.zshrc"
+    echo "  - 或在本仓库目录执行: source \"\$(pwd)/setup_aliases.sh\""
 }
 
-echo "别名已设置:"
+echo "别名已设置（项目根: $SCRIPT_DIR）:"
 echo "  start_bog     - 一键启动（自动完成所有设置）"
 echo "  setup_bog     - 手动创建虚拟环境（可选）"
 echo "  install_bog   - 更新依赖（可选）"
