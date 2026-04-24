@@ -50,6 +50,20 @@
     "base_url": "http://8.129.99.18:8000",
     "timeout_sec": 10
   },
+  "station_profiles": {
+    "jig_a": {
+      "serial_port": "/dev/cu.wchusbserial120",
+      "server_upload": {
+        "computer_identity": "JIG-A-FACTORY"
+      }
+    },
+    "jig_b": {
+      "serial_port": "/dev/cu.wchusbserial120",
+      "server_upload": {
+        "computer_identity": "JIG-B-FACTORY"
+      }
+    }
+  },
   "device_code_rule": "64YYWWXnnnnn",
   "procedures": [
     {
