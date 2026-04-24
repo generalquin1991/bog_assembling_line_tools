@@ -342,7 +342,7 @@
               "fallback_to_config": true,
               "config_key": "mode_number",
               "config_files": [
-                "config_develop.json",
+                "config/config_develop.json",
                 "config.json"
               ],
               "send_to_device": true,
@@ -365,7 +365,7 @@
               "fallback_to_config": true,
               "config_key": "version_string",
               "config_files": [
-                "config_develop.json",
+                "config/config_develop.json",
                 "config.json"
               ],
               "send_to_device": true,

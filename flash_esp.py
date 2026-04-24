@@ -85,6 +85,24 @@ PRINT_DEBUG_LOGS = True
 # 全局日志文件引用（用于统一日志写入）
 _current_log_file = None
 
+# 默认 Develop / Factory 主配置（统一在 config/ 目录，不再使用根目录同名 JSON）
+PATH_CONFIG_DEVELOP = os.path.join('config', 'config_develop.json')
+PATH_CONFIG_FACTORY = os.path.join('config', 'config_factory.json')
+
+
+def is_default_mode_config_file(config_path):
+    """是否为内置 develop/factory 主配置（可与根目录 config.json 合并缺省字段）。"""
+    if not config_path:
+        return False
+    try:
+        a = os.path.normcase(os.path.normpath(config_path))
+        return a in (
+            os.path.normcase(os.path.normpath(PATH_CONFIG_DEVELOP)),
+            os.path.normcase(os.path.normpath(PATH_CONFIG_FACTORY)),
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
 
 def set_current_log_file(log_file):
     """设置当前活动的日志文件，所有打印函数将写入此文件"""
@@ -921,7 +939,7 @@ class ESPFlasher:
                 config = json.load(f)
             
             # 如果是dev或factory配置文件，且缺少波特率字段，从config.json读取默认值
-            if self.config_path in ['config_develop.json', 'config_factory.json']:
+            if is_default_mode_config_file(self.config_path):
                 base_config_path = 'config.json'
                 if os.path.exists(base_config_path):
                     try:
@@ -3230,7 +3248,7 @@ def run_tui_once():
 def _station_profile_keys_union():
     """合并 config_develop / config_factory 中 station_profiles 的键（去重排序）。"""
     keys = set()
-    for path in ('config_develop.json', 'config_factory.json'):
+    for path in (PATH_CONFIG_DEVELOP, PATH_CONFIG_FACTORY):
         raw = load_default_config(path)
         if not raw or not isinstance(raw, dict):
             continue
@@ -3291,7 +3309,7 @@ def menu_select_station_at_tui_start(config_state):
 def menu_mode_main(config_state, mode_type):
     """Mode main menu (Develop/Factory)"""
     mode_name = 'Develop Mode' if mode_type == 'develop' else 'Factory Mode'
-    config_path = 'config_develop.json' if mode_type == 'develop' else 'config_factory.json'
+    config_path = PATH_CONFIG_DEVELOP if mode_type == 'develop' else PATH_CONFIG_FACTORY
     
     # Update configuration state
     if not config_state.get('mode') or config_state.get('mode') != mode_type:
@@ -3442,7 +3460,7 @@ def load_default_config(config_path):
             config = json.load(f)
         
         # If it's dev or factory config file and missing baud rate field, read default values from config.json
-        if config_path in ['config_develop.json', 'config_factory.json']:
+        if is_default_mode_config_file(config_path):
             base_config_path = 'config.json'
             if os.path.exists(base_config_path):
                 try:
@@ -3535,7 +3553,7 @@ def reload_default_config(config_state):
 
 def toggle_print_setting(config_state, setting_key, global_var_name):
     """Toggle a print setting (device_logs, esptool_logs, or debug_logs)"""
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     
     # Load current value from config file
     try:
@@ -3593,7 +3611,7 @@ def menu_settings(config_state, mode_type):
             print_header("Settings", 80)
             
             # Determine current config file path for this mode
-            config_path = config_state.get('config_path', 'config_develop.json')
+            config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
             
             # Get current configuration values
             current_port = config_state.get('port', '')
@@ -4178,7 +4196,7 @@ def menu_set_prompt_refresh_interval(config_state):
     print_header("Set Prompt Refresh Interval", 80)
     
     # Load default configuration
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     default_config = load_default_config(config_path)
     default_interval_ms = default_config.get('prompt_refresh_interval_ms', 333)
     
@@ -4264,7 +4282,7 @@ def menu_set_hash_verification_timeout(config_state):
     print_header("Set Hash Verification Timeout", 80)
     
     # Load default configuration
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     default_config = load_default_config(config_path)
     default_timeout = default_config.get('hash_verification_timeout', 20)
     
@@ -4350,7 +4368,7 @@ def menu_set_print_esptool_logs(config_state):
     print_header("Set Print ESPTool Logs", 80)
     
     # Load default configuration
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     default_config = load_default_config(config_path)
     default_print_esptool_logs = default_config.get('print_esptool_logs', True)
     
@@ -4423,7 +4441,7 @@ def menu_set_print_debug_logs(config_state):
     print_header("Set Print Debug Logs", 80)
     
     # Load default configuration
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     default_config = load_default_config(config_path)
     default_print_debug_logs = default_config.get('print_debug_logs', True)
     
@@ -4496,7 +4514,7 @@ def menu_set_print_device_logs(config_state):
     print_header("Set Print Device Logs", 80)
     
     # Load default configuration
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     default_config = load_default_config(config_path)
     default_print_logs = default_config.get('print_device_logs', True)
     
@@ -4588,10 +4606,10 @@ def menu_config_mode(config_state):
     
     # Select config file based on mode
     if selected_mode == 'develop':
-        config_path = 'config_develop.json'
+        config_path = PATH_CONFIG_DEVELOP
         mode_name = 'Develop Mode'
     else:
-        config_path = 'config_factory.json'
+        config_path = PATH_CONFIG_FACTORY
         mode_name = 'Factory Mode'
     
     # Check if config file exists
@@ -5721,7 +5739,7 @@ def execute_test_only(config_state, is_standalone_t_only=False):
         return False
     
     # Load config to get test patterns
-    config_path = config_state.get('config_path', 'config_develop.json')
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -8083,9 +8101,9 @@ def main():
             )
     elif args.mode:
         if args.mode == 'develop':
-            config_path = 'config_develop.json'
+            config_path = PATH_CONFIG_DEVELOP
         elif args.mode == 'factory':
-            config_path = 'config_factory.json'
+            config_path = PATH_CONFIG_FACTORY
         print(f"使用 {args.mode} 模式配置文件: {config_path}")
     else:
         config_path = args.config

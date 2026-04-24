@@ -91,7 +91,7 @@ start_bog
 ```
 
 The TUI interface will guide you through:
-1. If `config_develop.json` / `config_factory.json` define `station_profiles`, **choose fixture A/B (or top-level only) first**
+1. If `config/config_develop.json` / `config/config_factory.json` define `station_profiles`, **choose fixture A/B (or top-level only) first**
 2. Select flashing mode (development/production)
 3. Select serial port device (if not already set by the station profile)
 4. Select firmware file
@@ -158,7 +158,7 @@ python flash_esp.py -c config/config_factory.json --station jig_a
 python flash_esp.py -c config/config_factory.json --station jig_b
 ```
 
-With the default repo layout, `-m develop` / `-m factory` load `config_develop.json` / `config_factory.json` in the **project root**; keep `station_profiles` in those files (or pass `-c` to a shared file under `config/`).
+With the default repo layout, `-m develop` / `-m factory` load **`config/config_develop.json`** and **`config/config_factory.json`**; keep `station_profiles` there (or pass `-c` to another JSON).
 
 **TUI:** `python flash_esp.py` still opens the menu. To pick a station in the UI flow, use e.g. `python flash_esp.py -m develop --station jig_a` (no `-p`/`-f`/`-l`/`--no-*`) — that starts the **TUI** and applies the `jig_a` overlay. Add `-p …` or other batch flags if you want **non-interactive** CLI execution instead.
 
@@ -173,13 +173,13 @@ Serial number generation (`sn_generator.generate_sn`) serializes on the **same**
 ### DEVELOP Mode (Development Mode)
 - **Purpose**: Development and debugging
 - **Encryption**: Unencrypted, easy to debug and read
-- **Config File**: `config_develop.json`
+- **Config File**: `config/config_develop.json`
 - **Features**: Suitable for development phase, supports repeated flashing, supports detailed post-flash self-test (RTC, pressure sensor, button, HW revision, serial number, MAC logging, etc.)
 
 ### FACTORY Mode (Production Mode)
 - **Purpose**: Mass production and official release
 - **Encryption**: Supports encryption, more secure
-- **Config File**: `config_factory.json`
+- **Config File**: `config/config_factory.json`
 - **Features**: Suitable for production environment, protects firmware from being read, and can share a similar automated self-test workflow (RTC, pressure, button) depending on config
 
 ## Configuration Files
@@ -207,7 +207,7 @@ Configuration files contain the following main items:
 - **服务端项目**：[bog-test-server/](bog-test-server/)（FastAPI，SQLite，Dashboard）
 - **API 规范**：[bog-test-server/API_SPEC.md](bog-test-server/API_SPEC.md)（供其他工程/Agent 集成）
 
-客户端在 `config_develop.json` / `config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。**端口约定**：开发模式（config_develop）映射调试环境 **8001**，生产模式（config_factory）映射生产环境 **8000**。
+客户端在 `config/config_develop.json` / `config/config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。**端口约定**：开发模式映射调试环境 **8001**，生产模式映射生产环境 **8000**。
 
 ## Directory Structure
 
@@ -216,9 +216,10 @@ Configuration files contain the following main items:
 ├── firmware/              # Firmware folder, place .bin firmware files
 ├── bog-test-server/       # BOG 产测数据服务（烧录/产测/PCBA 上报与查询）
 ├── venv/                  # Virtual environment (when using virtual environment)
-├── config.json            # Default configuration file
-├── config_develop.json    # Development mode config (unencrypted)
-├── config_factory.json    # Production mode config (encrypted)
+├── config.json            # Default configuration file (baud/serial defaults merge source)
+├── config/                # Main mode configs (default `-m` paths)
+│   ├── config_develop.json
+│   └── config_factory.json
 ├── flash_esp.py           # Main flashing program
 ├── merge_esp_bin.py       # Bin file merger tool
 ├── requirements.txt       # Python dependencies

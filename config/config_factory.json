@@ -314,7 +314,7 @@
               "fallback_to_config": true,
               "config_key": "version_string",
               "config_files": [
-                "config_factory.json",
+                "config/config_factory.json",
                 "config.json"
               ],
               "send_to_device": true,
