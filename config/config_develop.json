@@ -1,7 +1,7 @@
 {
   "mode": "develop",
   "description": "开发模式 - 用于开发和调试，不加密",
-  "serial_port": "/dev/cu.wchusbserial120",
+  "serial_port": "/dev/cu.__SELECT_PORT_IN_TUI__",
   "chip_type": "esp32c2",
   "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
   "flash_mode": "dio",
@@ -52,13 +52,13 @@
   },
   "station_profiles": {
     "jig_a": {
-      "serial_port": "/dev/cu.wchusbserial120",
+      "serial_port": "/dev/cu.__JIG_A_SELECT_PORT__",
       "server_upload": {
         "computer_identity": "JIG-A-DEV"
       }
     },
     "jig_b": {
-      "serial_port": "/dev/cu.wchusbserial120",
+      "serial_port": "/dev/cu.__JIG_B_SELECT_PORT__",
       "server_upload": {
         "computer_identity": "JIG-B-DEV"
       }
