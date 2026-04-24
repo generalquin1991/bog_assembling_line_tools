@@ -91,11 +91,12 @@ start_bog
 ```
 
 The TUI interface will guide you through:
-1. Select flashing mode (development/production)
-2. Select serial port device
-3. Select firmware file
-4. Select other options (skip verification, no reset, erase Flash, etc.)
-5. Confirm configuration and start flashing
+1. If `config_develop.json` / `config_factory.json` define `station_profiles`, **choose fixture A/B (or top-level only) first**
+2. Select flashing mode (development/production)
+3. Select serial port device (if not already set by the station profile)
+4. Select firmware file
+5. Select other options (skip verification, no reset, erase Flash, etc.)
+6. Confirm configuration and start flashing
 
 ### Command Line Mode
 

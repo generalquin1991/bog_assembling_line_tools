@@ -3146,6 +3146,10 @@ def run_tui_once():
         config_state['station_id'] = preset_station
     if preset_mode and preset_station:
         menu_mode_main(config_state, preset_mode)
+    elif not (preset_mode and preset_station):
+        # 首屏选工位（再进 Develop/Factory 主菜单）；CLI 已带 --station 时跳过
+        if not menu_select_station_at_tui_start(config_state):
+            return
     
     # Main menu loop
     while True:
@@ -3156,6 +3160,8 @@ def run_tui_once():
             
             # Main menu options (formatted design)
             print_centered("Please select working mode", 80)
+            if config_state.get('station_id'):
+                print_centered(f"当前工位: {config_state['station_id']}", 80)
             print()
             
             main_menu_choices = [
@@ -3209,13 +3215,77 @@ def run_tui_once():
                 'monitor_baud': None,
                 'version_string': None,
                 'device_code_rule': None,
+                'station_id': None,
                 'options': []
             }
+            if not menu_select_station_at_tui_start(config_state):
+                return
             continue
         except Exception as e:
             print(f"\nError occurred: {e}")
             import traceback
             traceback.print_exc()
+
+
+def _station_profile_keys_union():
+    """合并 config_develop / config_factory 中 station_profiles 的键（去重排序）。"""
+    keys = set()
+    for path in ('config_develop.json', 'config_factory.json'):
+        raw = load_default_config(path)
+        if not raw or not isinstance(raw, dict):
+            continue
+        sp = raw.get('station_profiles')
+        if isinstance(sp, dict):
+            keys.update(sp.keys())
+    return sorted(keys)
+
+
+def menu_select_station_at_tui_start(config_state):
+    """TUI 启动首屏：若任一侧 JSON 含 station_profiles，则先选工位再进主菜单。
+
+    Returns:
+        True: 可继续；False: 用户退出或取消（结束 TUI）
+    """
+    if config_state.get('station_id'):
+        return True
+    keys = _station_profile_keys_union()
+    if not keys:
+        return True
+
+    clear_screen()
+    print_header("ESP Auto Flashing Tool", 80)
+    print_section_header("选择治具工位（第一步）", 80)
+    print()
+    print("检测到多工位配置 (station_profiles)，请先选择当前本机连接的治具。")
+    print("Develop / Factory 共用此工位；之后可在主菜单切换模式。")
+    print("「仅用顶层」不套用任何工位覆盖（使用 JSON 顶层串口与 server_upload）。")
+    print()
+
+    choices = []
+    for key in keys:
+        choices.append((f"  工位 {key}", key))
+    choices.append(('  仅用顶层配置（不选工位）', '__none__'))
+    choices.append(('  ❌  退出', '__exit__'))
+
+    station_q = [
+        inquirer.List(
+            'station',
+            message="",
+            choices=choices,
+            carousel=True,
+        )
+    ]
+    ans = inquirer.prompt(station_q)
+    if not ans:
+        return False
+    sel = ans.get('station')
+    if sel == '__exit__':
+        return False
+    if sel == '__none__':
+        config_state['station_id'] = None
+    else:
+        config_state['station_id'] = sel
+    return True
 
 
 def menu_mode_main(config_state, mode_type):
