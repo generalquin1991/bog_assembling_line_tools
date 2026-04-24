@@ -88,10 +88,23 @@ _current_log_file = None
 # 默认 Develop / Factory 主配置（统一在 config/ 目录，不再使用根目录同名 JSON）
 PATH_CONFIG_DEVELOP = os.path.join('config', 'config_develop.json')
 PATH_CONFIG_FACTORY = os.path.join('config', 'config_factory.json')
+# 全局默认与 develop/factory 缺省字段合并源（串口菜单「使用默认」、SerialMonitor 超时等）
+PATH_CONFIG_BASE = os.path.join('config', 'config.json')
+
+
+def is_default_cli_config_path(path):
+    """是否与 PATH_CONFIG_BASE 指向同一文件（用于 -c 默认值判断）。"""
+    if path is None:
+        return True
+    try:
+        return os.path.normcase(os.path.normpath(path)) == os.path.normcase(
+            os.path.normpath(PATH_CONFIG_BASE))
+    except (OSError, ValueError, TypeError):
+        return path == PATH_CONFIG_BASE
 
 
 def is_default_mode_config_file(config_path):
-    """是否为内置 develop/factory 主配置（可与根目录 config.json 合并缺省字段）。"""
+    """是否为内置 develop/factory 主配置（可与 PATH_CONFIG_BASE 合并缺省字段）。"""
     if not config_path:
         return False
     try:
@@ -496,8 +509,8 @@ class SerialMonitor:
             # 注意：这里不依赖具体的模式配置，只是提供可覆盖的默认值
             global_config = {}
             try:
-                if os.path.exists('config.json'):
-                    with open('config.json', 'r', encoding='utf-8') as f:
+                if os.path.exists(PATH_CONFIG_BASE):
+                    with open(PATH_CONFIG_BASE, 'r', encoding='utf-8') as f:
                         global_config = json.load(f)
             except Exception:
                 global_config = {}
@@ -616,8 +629,8 @@ class SerialMonitor:
         # 从基础配置读取串口监听总超时（默认120秒，与原代码一致）
         monitor_timeout_s = 120
         try:
-            if os.path.exists('config.json'):
-                with open('config.json', 'r', encoding='utf-8') as f:
+            if os.path.exists(PATH_CONFIG_BASE):
+                with open(PATH_CONFIG_BASE, 'r', encoding='utf-8') as f:
                     base_config = json.load(f)
                     monitor_timeout_s = base_config.get('serial_monitor_timeout_s', 120)
         except Exception:
@@ -925,14 +938,14 @@ def _tui_effective_config_for_station(config_path, config_state):
 class ESPFlasher:
     """ESP烧录器类"""
     
-    def __init__(self, config_path="config.json", station_id=None):
+    def __init__(self, config_path=None, station_id=None):
         """初始化烧录器，加载配置
 
         Args:
-            config_path: JSON 配置文件路径
+            config_path: JSON 配置文件路径（默认 config/config.json）
             station_id: 若 JSON 内含 station_profiles，传入键名则合并该工位覆盖项后再使用
         """
-        self.config_path = config_path
+        self.config_path = config_path if config_path is not None else PATH_CONFIG_BASE
         self.station_id = station_id
         self.sn_generator_paths = {}
         self.config = self.load_config()
@@ -949,7 +962,7 @@ class ESPFlasher:
         # 操作历史现在会写入统一日志文件
     
     def load_config(self):
-        """加载配置文件，如果波特率字段缺失则从config.json读取默认值"""
+        """加载配置文件；若为 develop/factory 主配置且缺字段，从 PATH_CONFIG_BASE 合并缺省项"""
         if not os.path.exists(self.config_path):
             print(f"错误: 配置文件 {self.config_path} 不存在")
             sys.exit(1)
@@ -958,22 +971,22 @@ class ESPFlasher:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             
-            # 如果是dev或factory配置文件，且缺少波特率字段，从config.json读取默认值
+            # 如果是dev或factory配置文件，且缺少波特率字段，从 PATH_CONFIG_BASE 读取默认值
             if is_default_mode_config_file(self.config_path):
-                base_config_path = 'config.json'
+                base_config_path = PATH_CONFIG_BASE
                 if os.path.exists(base_config_path):
                     try:
                         with open(base_config_path, 'r', encoding='utf-8') as f:
                             base_config = json.load(f)
                         
-                        # 需要从config.json读取默认值的字段：波特率相关字段、hash校验超时、串口过滤配置
+                        # 需要从 PATH_CONFIG_BASE 读取默认值的字段：波特率相关字段、hash校验超时、串口过滤配置
                         default_fields = ['baud_rate', 'monitor_baud', 'hash_verification_timeout',
                                          'filter_serial_ports', 'serial_port_keywords', 'exclude_port_patterns']
                         for field in default_fields:
                             if field not in config and field in base_config:
                                 config[field] = base_config[field]
                     except Exception as e:
-                        # 如果读取config.json失败，忽略错误，继续使用当前配置
+                        # 如果读取 PATH_CONFIG_BASE 失败，忽略错误，继续使用当前配置
                         pass
 
             # SN 路径在合并工位前固定，保证多 TUI / 多 --station 共用同一计数器与 flock
@@ -3482,7 +3495,7 @@ def menu_mode_main(config_state, mode_type):
 
 
 def load_default_config(config_path):
-    """Load default configuration from config file, read from config.json if baud rate field is missing"""
+    """Load default configuration from config file; merge from PATH_CONFIG_BASE when develop/factory lacks fields."""
     if not os.path.exists(config_path):
         return {}
     
@@ -3490,22 +3503,22 @@ def load_default_config(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         
-        # If it's dev or factory config file and missing baud rate field, read default values from config.json
+        # If it's dev or factory config file and missing baud rate field, read default values from PATH_CONFIG_BASE
         if is_default_mode_config_file(config_path):
-            base_config_path = 'config.json'
+            base_config_path = PATH_CONFIG_BASE
             if os.path.exists(base_config_path):
                 try:
                     with open(base_config_path, 'r', encoding='utf-8') as f:
                         base_config = json.load(f)
                     
-                    # Fields that need to read default values from config.json: baud rate related fields, hash verification timeout, serial port filter config
+                    # Fields merged from PATH_CONFIG_BASE: baud, hash timeout, serial port filter config
                     default_fields = ['baud_rate', 'monitor_baud', 'hash_verification_timeout', 
                                      'filter_serial_ports', 'serial_port_keywords', 'exclude_port_patterns']
                     for field in default_fields:
                         if field not in config and field in base_config:
                             config[field] = base_config[field]
                 except Exception as e:
-                    # If reading config.json fails, ignore error and continue using current config
+                    # If reading PATH_CONFIG_BASE fails, ignore error and continue using current config
                     pass
         
         return config
@@ -3557,7 +3570,7 @@ def save_config_to_file(config_state):
 
 
 def reload_default_config(config_state):
-    """Reload default configuration (supports reading default baud rate from config.json)"""
+    """Reload default configuration (supports merging default baud/filter from PATH_CONFIG_BASE)"""
     config_path = config_state.get('config_path')
     if not config_path:
         return config_state
@@ -3840,8 +3853,8 @@ def menu_set_ports(config_state):
         default_config = load_default_config(config_state.get('config_path', ''))
         current_port = config_state.get('port', default_config.get('serial_port'))
         
-        # Read default serial port from config.json (only for displaying "Use default serial port" option)
-        base_config_path = 'config.json'
+        # Read default serial port from PATH_CONFIG_BASE (only for displaying "Use default serial port" option)
+        base_config_path = PATH_CONFIG_BASE
         default_port = None
         if os.path.exists(base_config_path):
             try:
@@ -3856,7 +3869,7 @@ def menu_set_ports(config_state):
         print()
         config_items = [("Current Serial Port", current_port if current_port else 'Not set')]
         if default_port:
-            config_items.append(("Default Serial Port (config.json)", default_port))
+            config_items.append(("Default Serial Port (config/config.json)", default_port))
         print_config_table(config_items, 80)
         print()
         
@@ -3870,9 +3883,9 @@ def menu_set_ports(config_state):
         if ports:
             port_choices = [(f"{port.device} - {port.description}", port.device) for port in ports]
         
-        # Only show "Use default serial port" option if serial_port exists in config.json
+        # Only show "Use default serial port" option if serial_port exists in PATH_CONFIG_BASE
         if default_port:
-            port_choices.append(('Use default serial port (config.json)', default_port))
+            port_choices.append(('Use default serial port (config/config.json)', default_port))
         # Add refresh option to re-enumerate ports without leaving this menu
         port_choices.append(('Refresh ports', '__refresh__'))
         port_choices.append(('Back', 'back'))
@@ -4664,8 +4677,8 @@ def menu_config_port(config_state):
     print("  Configure Serial Port Device")
     print("-"*60)
     
-    # Read default serial port from config.json (only for displaying "Use default serial port" option)
-    base_config_path = 'config.json'
+    # Read default serial port from PATH_CONFIG_BASE (only for displaying "Use default serial port" option)
+    base_config_path = PATH_CONFIG_BASE
     default_port = None
     if os.path.exists(base_config_path):
         try:
@@ -4681,16 +4694,16 @@ def menu_config_port(config_state):
     if config_state.get('config_path'):
         filter_config = load_default_config(config_state['config_path'])
     else:
-        filter_config = load_default_config('config.json')
+        filter_config = load_default_config(PATH_CONFIG_BASE)
     ports = filter_serial_ports(all_ports, filter_config)
     port_choices = []
     
     if ports:
         port_choices = [(f"{port.device} - {port.description}", port.device) for port in ports]
     
-    # Only show "Use default serial port" option if serial_port exists in config.json
+    # Only show "Use default serial port" option if serial_port exists in PATH_CONFIG_BASE
     if default_port:
-        port_choices.append(('Use default serial port (config.json)', default_port))
+        port_choices.append(('Use default serial port (config/config.json)', default_port))
     port_choices.append(('← Back to Main Menu', 'back'))
     
     port_question = [
@@ -8085,8 +8098,8 @@ def main():
     
     # Create argument parser
     parser = argparse.ArgumentParser(description='ESP Auto Flashing Tool')
-    parser.add_argument('-c', '--config', default='config.json',
-                       help='Config file path (default: config.json). Non-default path is used even with -m.')
+    parser.add_argument('-c', '--config', default=PATH_CONFIG_BASE,
+                       help=f'Config file path (default: {PATH_CONFIG_BASE}). Non-default path is used even with -m.')
     parser.add_argument('-m', '--mode', choices=['develop', 'factory'],
                        help='Flash mode: develop (develop mode, no encryption) or factory (factory mode, encrypted)')
     parser.add_argument(
@@ -8134,8 +8147,8 @@ def main():
         args.no_verify, args.no_reset, args.station,
     ])
     
-    # 如果config不是默认值，也算有参数
-    if args.config != 'config.json':
+    # 如果 config 不是默认 PATH_CONFIG_BASE，也算有参数
+    if not is_default_cli_config_path(args.config):
         has_other_args = True
     
     if not has_other_args:
@@ -8144,7 +8157,7 @@ def main():
         return
     
     # 选择配置文件：显式 -c/--config 优先于 -m（便于双治具各用一份完整 JSON，仍可用 -m 作提示）
-    if args.config != 'config.json':
+    if not is_default_cli_config_path(args.config):
         config_path = args.config
         if args.mode:
             print(

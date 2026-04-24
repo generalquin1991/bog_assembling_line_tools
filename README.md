@@ -130,7 +130,7 @@ python flash_esp.py --no-reset
 python flash_esp.py -c config/jig_a.json -p /dev/cu.wchusbserial10
 ```
 
-When `-c` / `--config` is not the default `config.json`, that file is always used even if you also pass `--mode` (mode and procedures are read from the JSON).
+When `-c` / `--config` is not the default `config/config.json`, that file is always used even if you also pass `--mode` (mode and procedures are read from the JSON).
 
 ### One Mac, two fixtures (two terminals)
 
@@ -216,8 +216,8 @@ Configuration files contain the following main items:
 ├── firmware/              # Firmware folder, place .bin firmware files
 ├── bog-test-server/       # BOG 产测数据服务（烧录/产测/PCBA 上报与查询）
 ├── venv/                  # Virtual environment (when using virtual environment)
-├── config.json            # Default configuration file (baud/serial defaults merge source)
-├── config/                # Main mode configs (default `-m` paths)
+├── config/                # All tool JSON (default `-c`, `-m` paths, merge base)
+│   ├── config.json        # Default `-c`; merge source for develop/factory missing fields; SerialMonitor timeouts
 │   ├── config_develop.json
 │   └── config_factory.json
 ├── flash_esp.py           # Main flashing program

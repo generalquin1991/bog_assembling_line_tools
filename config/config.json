@@ -1,3 +1,25 @@
 {
-  "serial_port": "/dev/cu.__SELECT_PORT_IN_TUI__"
+  "serial_port": "/dev/cu.__SELECT_PORT_IN_TUI__",
+  "serial_read_timeout_s": 0.1,
+  "serial_open_settle_ms": 100,
+  "serial_monitor_timeout_s": 120,
+  "baud_rate": 2000000,
+  "monitor_baud": 78400,
+  "chip_type": "esp32c2",
+  "firmware_path": "firmware/CO2ControllerFW_combined_0_4_0.bin",
+  "hash_verification_timeout": 20,
+  "filter_serial_ports": true,
+  "serial_port_keywords": [
+    "USB Serial",
+    "Serial",
+    "COM",
+    "USB"
+  ],
+  "exclude_port_patterns": [
+    "debug-console",
+    "wlan-debug",
+    "Bluetooth",
+    "HUAWEI",
+    "n/a"
+  ]
 }

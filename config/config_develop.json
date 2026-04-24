@@ -343,7 +343,7 @@
               "config_key": "mode_number",
               "config_files": [
                 "config/config_develop.json",
-                "config.json"
+                "config/config.json"
               ],
               "send_to_device": true,
               "on_failure": "error"
@@ -366,7 +366,7 @@
               "config_key": "version_string",
               "config_files": [
                 "config/config_develop.json",
-                "config.json"
+                "config/config.json"
               ],
               "send_to_device": true,
               "on_failure": "error"
