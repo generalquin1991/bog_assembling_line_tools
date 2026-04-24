@@ -470,9 +470,10 @@ class RestartTUI(Exception):
 class SerialMonitor:
     """串口监听器，用于监听设备日志并自动输入"""
     
-    def __init__(self, port, baud_rate=115200):
+    def __init__(self, port, baud_rate=115200, sn_generator_kwargs=None):
         self.port = port
         self.baud_rate = baud_rate
+        self.sn_generator_kwargs = dict(sn_generator_kwargs) if sn_generator_kwargs else {}
         self.serial_conn = None
         self.running = False
         self.buffer = ""
@@ -697,7 +698,7 @@ class SerialMonitor:
             # 使用新的序列号生成器（格式: 64YYWWXnnnnn）
             if SN_GENERATOR_ENABLED:
                 try:
-                    sn = generate_sn()
+                    sn = generate_sn(**self.sn_generator_kwargs)
                     if sn:
                         # 保存生成的序列号到device_info，用于后续状态更新
                         self.device_info['generated_sn'] = sn
@@ -893,6 +894,17 @@ def resolve_station_profiles_config(raw_config, station_id=None):
         print(f"错误: station_profiles[{station_id!r}] 必须是 JSON 对象")
         sys.exit(1)
     return _deep_merge_dict(cfg, overlay)
+
+
+def sn_generator_paths_from_merged_config(cfg):
+    """从已合并 station 的运行时配置解析 sn_generator 路径（与 server_upload 等共用 mac_mapping_path）。"""
+    if not cfg:
+        return {}
+    return {
+        'config_path': cfg.get('sn_config_path') or 'sn_config.json',
+        'log_path': cfg.get('sn_log_path') or cfg.get('all_sn_logs_path') or 'all_sn_logs.json',
+        'mapping_path': cfg.get('mac_mapping_path') or 'mac_mapping.json',
+    }
 
 
 def _tui_effective_config_for_station(config_path, config_state):
@@ -2218,7 +2230,10 @@ class ESPFlasher:
                               f"Port: {port}, Baud: {monitor_baud}, Timeout: {timeout}s", 
                               session_id)
         
-        monitor = SerialMonitor(port, monitor_baud)
+        monitor = SerialMonitor(
+            port, monitor_baud,
+            sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+        )
         if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
             if log_file:
@@ -2727,7 +2742,10 @@ class ESPFlasher:
         
         # 为当前步骤单独创建串口监控实例
         normalized_port = normalize_serial_port(port)
-        monitor = SerialMonitor(normalized_port, monitor_baud)
+        monitor = SerialMonitor(
+            normalized_port, monitor_baud,
+            sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+        )
         if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
             if log_file:
@@ -2947,7 +2965,10 @@ class ESPFlasher:
         
         # 如果需要发送到设备
         if send_to_device:
-            monitor = SerialMonitor(port, monitor_baud)
+            monitor = SerialMonitor(
+                port, monitor_baud,
+                sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+            )
             if not monitor.open():
                 print("  ✗ 无法打开串口发送数据")
                 save_operation_history(f"Step: {step_name} - Result", 
@@ -5399,6 +5420,7 @@ def test(flasher, config_state):
         'port': config_state.get('port') or config.get('serial_port'),
         'monitor_baud': config_state.get('monitor_baud') or config.get('monitor_baud', 78400),
         'config_path': flasher.config_path,
+        'station_id': config_state.get('station_id'),
         'mode_name': config_state.get('mode_name', 'Test Mode'),
         '_last_burn': config_state.get('_last_burn'),
         '_p_t_start_time': config_state.get('_p_t_start_time'),
@@ -5751,6 +5773,10 @@ def execute_test_only(config_state, is_standalone_t_only=False):
         except (KeyboardInterrupt, EOFError):
             pass
         return False
+    
+    # 与烧录流程一致：合并 station_profiles，使工位级 sn_log_path / sn_config_path 等生效
+    config = resolve_station_profiles_config(config, config_state.get('station_id'))
+    sn_gen_paths = sn_generator_paths_from_merged_config(config)
     
     # Load print_device_logs, print_esptool_logs, and print_debug_logs settings from config
     global PRINT_DEVICE_LOGS, PRINT_ESPTOOL_LOGS, PRINT_DEBUG_LOGS
@@ -6554,7 +6580,7 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                         # 使用新的序列号生成器（格式: 64YYWWXnnnnn）
                                         if SN_GENERATOR_ENABLED:
                                             try:
-                                                device_code = generate_sn()
+                                                device_code = generate_sn(**sn_gen_paths)
                                                 if device_code:
                                                     # 保存生成的序列号到monitored_data，用于后续状态更新
                                                     monitored_data['generated_sn'] = device_code
@@ -6564,6 +6590,9 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                                                     device_code = None
                                             except HashVerificationError as e:
                                                 print(f"\033[91m✗ 序列号生成器hash验证失败: {e}\033[0m")
+                                                device_code = None
+                                            except RuntimeError as e:
+                                                print(f"\033[91m✗ 序列号生成中止（状态文件未写入）: {e}\033[0m")
                                                 device_code = None
                                             except Exception as e:
                                                 print(f"\033[91m✗ 序列号生成失败: {e}\033[0m")
@@ -7257,14 +7286,24 @@ def execute_test_only(config_state, is_standalone_t_only=False):
                 # update_sn_status() 会自动获取文件操作权限，无需手动使用 file_access()
                 if test_success:
                     # 测试成功，标记为占用成功
-                    if update_sn_status(sn_to_update, 'occupied', mac_address=mac_address):
+                    if update_sn_status(
+                        sn_to_update, 'occupied',
+                        log_path=sn_gen_paths['log_path'],
+                        config_path=sn_gen_paths['config_path'],
+                        mac_address=mac_address,
+                    ):
                         mac_info = f" (MAC: {mac_address})" if mac_address else ""
                         debug_print(f"\n\033[92m✓ 序列号 {sn_to_update} 已被成功占用（状态: occupied）{mac_info}\033[0m")
                     else:
                         print(f"\n\033[91m✗ 序列号 {sn_to_update} 状态更新失败（未找到序列号）\033[0m")
                 else:
                     # 测试失败，标记为失败
-                    if update_sn_status(sn_to_update, 'failed', mac_address=mac_address):
+                    if update_sn_status(
+                        sn_to_update, 'failed',
+                        log_path=sn_gen_paths['log_path'],
+                        config_path=sn_gen_paths['config_path'],
+                        mac_address=mac_address,
+                    ):
                         mac_info = f" (MAC: {mac_address})" if mac_address else ""
                         print(f"\n\033[91m✗ 序列号 {sn_to_update} 占用失败（状态: failed）{mac_info}\033[0m")
                     else:
@@ -7931,7 +7970,10 @@ def menu_start_flash(config_state):
     print("Waiting for device to start and automatically input version and device code...\n")
     
     # Create serial port monitor
-    monitor = SerialMonitor(config_state['port'], monitor_baud)
+    monitor = SerialMonitor(
+        config_state['port'], monitor_baud,
+        sn_generator_kwargs=sn_generator_paths_from_merged_config(flasher.config),
+    )
     
     if not monitor.open():
         print("✗ Unable to open serial port for monitoring")

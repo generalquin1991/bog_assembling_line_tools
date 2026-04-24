@@ -246,10 +246,11 @@ def _acquire_file_lock(log_path: str = "all_sn_logs.json", timeout: float = 5.0)
             except BlockingIOError:
                 # 锁被占用，等待一段时间后重试
                 if (time.time() - start_time) > timeout:
-                    lock_file.close()
+                    # 仅关闭本进程打开的 fd；勿 unlink lock_path——其他进程可能已 flock
+                    # 同一 inode，删除路径会导致后续竞争者创建「新文件」与持锁者脱钩，失去互斥。
                     try:
-                        os.remove(lock_path)
-                    except:
+                        lock_file.close()
+                    except OSError:
                         pass
                     return False
                 time.sleep(0.1)
@@ -1448,8 +1449,10 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
         
     并发:
         同一 log_path 下多进程调用时，通过 file_access(log_path) 串行化序号与日志写入。
+        锁在 macOS/Linux 上为同一 log_path 旁的 ``.lock`` 文件 + ``flock``；超时等待不会删除他人持有的锁文件。
         若两路产线使用不同 log_path 而共用同一 config_path，仍可能重复 SN，须保持二者成对一致
         或共用同一 log_path。
+        Windows 无 ``flock``：当前为 PID 标记锁，存在竞态，生产环境请仅用 Unix 或确保单进程写 SN。
         
     Returns:
         str: 生成的序列号
@@ -1514,7 +1517,10 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
         config['status'] = 'pending'
 
         if not save_sn_config(config, config_path):
-            print("警告: 配置保存失败，但序列号已生成")
+            # 必须先持久化 sn_config 再写日志；否则下次启动仍用旧序号，易与已写日志冲突产生重复 SN
+            raise RuntimeError(
+                f"序列号状态文件保存失败，已中止写入日志，未分配 SN: {sn!r}（请检查路径与磁盘权限: {config_path!r}）"
+            )
 
         try:
             add_sn_log(sn, computer_id, current_week, status='pending', log_path=log_path, force=force)
