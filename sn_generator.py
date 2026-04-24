@@ -1448,10 +1448,11 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
         force: 是否强制继续（即使hash验证失败，不推荐使用）
         
     并发:
-        同一 log_path 下多进程调用时，通过 file_access(log_path) 串行化序号与日志写入。
-        锁在 macOS/Linux 上为同一 log_path 旁的 ``.lock`` 文件 + ``flock``；超时等待不会删除他人持有的锁文件。
-        若两路产线使用不同 log_path 而共用同一 config_path，仍可能重复 SN，须保持二者成对一致
-        或共用同一 log_path。
+        同一 ``log_path``（及成对的 ``config_path``）下多进程调用时，通过 ``file_access(log_path)``
+        串行化「读配置 → 写配置 → 写日志」。多套 TUI / 多终端须解析到同一套路径（建议相同 cwd
+        或顶层配置写绝对路径），否则各自 flock 不同文件会失去互斥。
+        锁在 macOS/Linux 上为 ``log_path`` 旁 ``.lock`` + ``flock``；超时等待不会删除他人持有的锁文件。
+        若两路使用不同 ``log_path`` 而共用同一 ``computer_id``，仍可能重复 SN。
         Windows 无 ``flock``：当前为 PID 标记锁，存在竞态，生产环境请仅用 Unix 或确保单进程写 SN。
         
     Returns:

@@ -896,14 +896,21 @@ def resolve_station_profiles_config(raw_config, station_id=None):
     return _deep_merge_dict(cfg, overlay)
 
 
-def sn_generator_paths_from_merged_config(cfg):
-    """从已合并 station 的运行时配置解析 sn_generator 路径（与 server_upload 等共用 mac_mapping_path）。"""
+def sn_generator_paths_from_config_top_level(cfg):
+    """解析 sn_generator 使用的路径，仅从 JSON 顶层读取，忽略 station_profiles。
+
+    两套 TUI（如两个终端各 --station jig_a / jig_b）共用同一套 sn_config + all_sn_logs，
+    靠同一 log_path 旁的 flock 互斥；若允许工位覆写 sn_*，会分裂成两个计数器，同一
+    computer_id 下必然产生重复 SN。因此工位 profile 里勿配置 sn_config_path /
+    sn_log_path / all_sn_logs_path / mac_mapping_path（仅顶层一份）。
+    """
     if not cfg:
         return {}
+    top = {k: v for k, v in cfg.items() if k != 'station_profiles'}
     return {
-        'config_path': cfg.get('sn_config_path') or 'sn_config.json',
-        'log_path': cfg.get('sn_log_path') or cfg.get('all_sn_logs_path') or 'all_sn_logs.json',
-        'mapping_path': cfg.get('mac_mapping_path') or 'mac_mapping.json',
+        'config_path': top.get('sn_config_path') or 'sn_config.json',
+        'log_path': top.get('sn_log_path') or top.get('all_sn_logs_path') or 'all_sn_logs.json',
+        'mapping_path': top.get('mac_mapping_path') or 'mac_mapping.json',
     }
 
 
@@ -927,6 +934,7 @@ class ESPFlasher:
         """
         self.config_path = config_path
         self.station_id = station_id
+        self.sn_generator_paths = {}
         self.config = self.load_config()
         self.validate_config()
         # 创建会话ID用于关联所有日志
@@ -968,6 +976,8 @@ class ESPFlasher:
                         # 如果读取config.json失败，忽略错误，继续使用当前配置
                         pass
 
+            # SN 路径在合并工位前固定，保证多 TUI / 多 --station 共用同一计数器与 flock
+            self.sn_generator_paths = sn_generator_paths_from_config_top_level(config)
             config = resolve_station_profiles_config(config, self.station_id)
 
             return config
@@ -2232,7 +2242,7 @@ class ESPFlasher:
         
         monitor = SerialMonitor(
             port, monitor_baud,
-            sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+            sn_generator_kwargs=self.sn_generator_paths,
         )
         if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
@@ -2744,7 +2754,7 @@ class ESPFlasher:
         normalized_port = normalize_serial_port(port)
         monitor = SerialMonitor(
             normalized_port, monitor_baud,
-            sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+            sn_generator_kwargs=self.sn_generator_paths,
         )
         if not monitor.open():
             print("  ✗ 无法打开串口进行监控")
@@ -2967,7 +2977,7 @@ class ESPFlasher:
         if send_to_device:
             monitor = SerialMonitor(
                 port, monitor_baud,
-                sn_generator_kwargs=sn_generator_paths_from_merged_config(self.config),
+                sn_generator_kwargs=self.sn_generator_paths,
             )
             if not monitor.open():
                 print("  ✗ 无法打开串口发送数据")
@@ -5774,9 +5784,9 @@ def execute_test_only(config_state, is_standalone_t_only=False):
             pass
         return False
     
-    # 与烧录流程一致：合并 station_profiles，使工位级 sn_log_path / sn_config_path 等生效
+    # SN 路径仅用顶层（合并前），与多 TUI 共用 flock + 单一序号文件；再合并工位供串口等
+    sn_gen_paths = sn_generator_paths_from_config_top_level(config)
     config = resolve_station_profiles_config(config, config_state.get('station_id'))
-    sn_gen_paths = sn_generator_paths_from_merged_config(config)
     
     # Load print_device_logs, print_esptool_logs, and print_debug_logs settings from config
     global PRINT_DEVICE_LOGS, PRINT_ESPTOOL_LOGS, PRINT_DEBUG_LOGS
@@ -7972,7 +7982,7 @@ def menu_start_flash(config_state):
     # Create serial port monitor
     monitor = SerialMonitor(
         config_state['port'], monitor_baud,
-        sn_generator_kwargs=sn_generator_paths_from_merged_config(flasher.config),
+        sn_generator_kwargs=flasher.sn_generator_paths,
     )
     
     if not monitor.open():
