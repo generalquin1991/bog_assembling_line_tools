@@ -122,7 +122,28 @@ python flash_esp.py --no-verify
 
 # Don't reset after flashing
 python flash_esp.py --no-reset
+
+# Custom config path (recommended for two fixtures on one Mac: one JSON per jig)
+python flash_esp.py -c config/jig_a.json -p /dev/cu.wchusbserial10
 ```
+
+When `-c` / `--config` is not the default `config.json`, that file is always used even if you also pass `--mode` (mode and procedures are read from the JSON).
+
+### One Mac, two fixtures (two terminals)
+
+Use **two terminal windows** and **two config files** (copy from `config/config_develop.json` or `config_factory.json`), differing at least by:
+
+- `serial_port` and/or pass `-p` per session
+- `server_upload.computer_identity` so burn records are distinguishable on the BOG server
+
+Example:
+
+```bash
+python flash_esp.py -c config/jig_a.json -p /dev/cu.wchusbserial10
+python flash_esp.py -c config/jig_b.json -p /dev/cu.wchusbserial11
+```
+
+Serial number generation (`sn_generator.generate_sn`) serializes on the **same** `all_sn_logs.json` lock as the log append when `log_path` is shared; use one shared log/config pair per Mac unless you add separate SN state files and wire them through the tool.
 
 ## Mode Description
 

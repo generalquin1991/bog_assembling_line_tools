@@ -7881,7 +7881,7 @@ def main():
     # Create argument parser
     parser = argparse.ArgumentParser(description='ESP Auto Flashing Tool')
     parser.add_argument('-c', '--config', default='config.json',
-                       help='Config file path (default: config.json)')
+                       help='Config file path (default: config.json). Non-default path is used even with -m.')
     parser.add_argument('-m', '--mode', choices=['develop', 'factory'],
                        help='Flash mode: develop (develop mode, no encryption) or factory (factory mode, encrypted)')
     parser.add_argument('-p', '--port', help='Serial port device path (overrides config file)')
@@ -7919,14 +7919,22 @@ def main():
         run_tui()
         return
     
-    # 根据模式选择配置文件
-    config_path = args.config
-    if args.mode:
+    # 选择配置文件：显式 -c/--config 优先于 -m（便于双治具各用一份完整 JSON，仍可用 -m 作提示）
+    if args.config != 'config.json':
+        config_path = args.config
+        if args.mode:
+            print(
+                f"注意: 已指定自定义配置 {config_path}，忽略 --mode 的默认配置文件映射；"
+                f"模式以 JSON 内 mode 等字段为准（你传入的 --mode 为 {args.mode}）。"
+            )
+    elif args.mode:
         if args.mode == 'develop':
             config_path = 'config_develop.json'
         elif args.mode == 'factory':
             config_path = 'config_factory.json'
         print(f"使用 {args.mode} 模式配置文件: {config_path}")
+    else:
+        config_path = args.config
     
     # 列出串口
     if args.list:

@@ -1446,6 +1446,11 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
         log_path: 日志文件路径
         force: 是否强制继续（即使hash验证失败，不推荐使用）
         
+    并发:
+        同一 log_path 下多进程调用时，通过 file_access(log_path) 串行化序号与日志写入。
+        若两路产线使用不同 log_path 而共用同一 config_path，仍可能重复 SN，须保持二者成对一致
+        或共用同一 log_path。
+        
     Returns:
         str: 生成的序列号
         
@@ -1454,9 +1459,6 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
         HashVerificationError: 当哈希验证失败且 force=False 时
         MacMappingError: 当本机MAC地址未在映射表中找到时
     """
-    # 加载配置（会验证MAC映射表的hash）
-    config = load_sn_config(config_path)
-    
     # 强制通过MAC地址映射表获取computer_id（禁止手动设置）
     if computer_id is not None:
         raise ValueError(
@@ -1464,7 +1466,7 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
             "   computer_id必须通过本机MAC地址从映射表中自动获取。\n"
             "   请移除computer_id参数，程序会自动根据MAC地址查找。"
         )
-    
+
     # 从系统序列号映射表获取computer_id（硬编码，确保绝对安全）
     try:
         computer_id = get_computer_id_from_serial(mapping_path)
@@ -1473,66 +1475,55 @@ def generate_sn(computer_id: Optional[int] = None, config_path: str = "sn_config
     except HashVerificationError as e:
         if force:
             print(f"⚠️  警告: {str(e)}")
-            # 强制模式下，跳过hash验证重新加载
             computer_id = get_computer_id_from_mac(None, mapping_path)
         else:
             raise
-    
-    # 验证电脑编号范围 (1-9) - 双重检查
+
     if not (1 <= computer_id <= 9):
         raise ValueError(f"电脑编号必须在1-9之间，当前值: {computer_id}")
-    
-    # 获取当前年份和周数
-    yy, ww = get_iso_week()
-    current_week = yy + ww  # 例如 "2402"
-    
-    # 检查周数是否变化
-    stored_week = config.get('current_week', '0000')
-    stored_sequence = config.get('sequence_number', 0)
-    
-    if current_week != stored_week:
-        # 周数变化，重置序列号
-        sequence_number = 1
-        config['current_week'] = current_week
-    elif stored_sequence == 0:
-        # 同一周，但序列号为0（首次使用），从1开始
-        sequence_number = 1
-    else:
-        # 同一周，递增序列号
-        sequence_number = stored_sequence + 1
-    
-    # 检查序列号是否超过最大值
-    if sequence_number > 99999:
-        raise ValueError(f"序列号已超过最大值99999，当前周: {current_week}")
-    
-    # 更新配置（注意：不保存computer_id，确保绝对硬编码）
-    config['sequence_number'] = sequence_number
-    # 不保存computer_id到配置文件，确保每次都是从MAC映射表硬编码获取
-    
-    # 生成序列号
-    sn = f"64{yy}{ww}{computer_id}{sequence_number:05d}"
-    
-    # 记录生成时间和序列号
-    now = datetime.now()
-    config['last_generated_at'] = now.isoformat()
-    config['last_generated_sn'] = sn
-    config['status'] = 'pending'  # 新生成的序列号默认为pending状态
-    
-    # 保存配置（不包含computer_id，确保硬编码）
-    if not save_sn_config(config, config_path):
-        print("警告: 配置保存失败，但序列号已生成")
-    
-    # 添加到历史日志（会验证hash，如果失败会抛出异常）
-    # add_sn_log 会自动获取文件访问权限
-    try:
-        add_sn_log(sn, computer_id, current_week, status='pending', log_path=log_path, force=force)
-    except HashVerificationError as e:
-        # 如果hash验证失败，回滚序列号（不保存配置）
-        config['sequence_number'] = stored_sequence
-        save_sn_config(config, config_path)
-        raise
-    
-    return sn
+
+    # 与 all_sn_logs 使用同一把 file_access 锁，串行化「读 sn_config → 写 sn_config → 写日志」，
+    # 避免同一 Mac 上多进程并发生成重复 SN（原先仅 add_sn_log 加锁，sn_config 更新在锁外）。
+    with file_access(log_path):
+        config = load_sn_config(config_path)
+
+        yy, ww = get_iso_week()
+        current_week = yy + ww  # 例如 "2402"
+
+        stored_week = config.get('current_week', '0000')
+        stored_sequence = config.get('sequence_number', 0)
+
+        if current_week != stored_week:
+            sequence_number = 1
+            config['current_week'] = current_week
+        elif stored_sequence == 0:
+            sequence_number = 1
+        else:
+            sequence_number = stored_sequence + 1
+
+        if sequence_number > 99999:
+            raise ValueError(f"序列号已超过最大值99999，当前周: {current_week}")
+
+        config['sequence_number'] = sequence_number
+
+        sn = f"64{yy}{ww}{computer_id}{sequence_number:05d}"
+
+        now = datetime.now()
+        config['last_generated_at'] = now.isoformat()
+        config['last_generated_sn'] = sn
+        config['status'] = 'pending'
+
+        if not save_sn_config(config, config_path):
+            print("警告: 配置保存失败，但序列号已生成")
+
+        try:
+            add_sn_log(sn, computer_id, current_week, status='pending', log_path=log_path, force=force)
+        except HashVerificationError:
+            config['sequence_number'] = stored_sequence
+            save_sn_config(config, config_path)
+            raise
+
+        return sn
 
 
 def get_current_status(config_path: str = "sn_config.json", mapping_path: str = "mac_mapping.json") -> dict:
