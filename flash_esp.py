@@ -369,6 +369,10 @@ _tui_ping_error = True
 _tui_ping_lock = threading.Lock()
 _tui_ping_thread_started = False
 
+# CLI 传入 TUI 时的预设（--station / 可选 -m），run_tui_once 首屏消费后清零
+_TUI_PRESET_MODE = None
+_TUI_PRESET_STATION = None
+
 
 def _tui_ping_worker():
     """后台线程：循环 ping 当前 base_url，更新延迟供 TUI 底部显示。"""
@@ -871,6 +875,14 @@ def resolve_station_profiles_config(raw_config, station_id=None):
         print(f"错误: station_profiles[{station_id!r}] 必须是 JSON 对象")
         sys.exit(1)
     return _deep_merge_dict(cfg, overlay)
+
+
+def _tui_effective_config_for_station(config_path, config_state):
+    """TUI 用：磁盘上的 JSON + 可选 station_id 合并为当前生效配置（不写回磁盘）。"""
+    raw = load_default_config(config_path)
+    if not raw:
+        return {}
+    return resolve_station_profiles_config(copy.deepcopy(raw), config_state.get('station_id'))
 
 
 class ESPFlasher:
@@ -3127,8 +3139,19 @@ def run_tui_once():
         'monitor_baud': None,
         'version_string': None,
         'device_code_rule': None,
+        'station_id': None,
         'options': []
     }
+
+    global _TUI_PRESET_MODE, _TUI_PRESET_STATION
+    preset_mode = _TUI_PRESET_MODE
+    preset_station = _TUI_PRESET_STATION
+    _TUI_PRESET_MODE = None
+    _TUI_PRESET_STATION = None
+    if preset_station:
+        config_state['station_id'] = preset_station
+    if preset_mode and preset_station:
+        menu_mode_main(config_state, preset_mode)
     
     # Main menu loop
     while True:
@@ -3212,20 +3235,20 @@ def menu_mode_main(config_state, mode_type):
         config_state['mode_name'] = mode_name
         config_state['config_path'] = config_path
         
-        # Load default configuration (using load_default_config to support reading default baud rate from config.json)
-        default_config = load_default_config(config_path)
-        if default_config:
-            config_state['port'] = config_state.get('port') or default_config.get('serial_port')
-            config_state['baud_rate'] = config_state.get('baud_rate') or default_config.get('baud_rate')
-            config_state['firmware'] = config_state.get('firmware') or default_config.get('firmware_path')
-            config_state['monitor_baud'] = config_state.get('monitor_baud') or default_config.get('monitor_baud')
-            config_state['version_string'] = config_state.get('version_string') or default_config.get('version_string')
-            config_state['device_code_rule'] = config_state.get('device_code_rule') or default_config.get('device_code_rule')
+        # Load default configuration（含 station_profiles 时按 station_id 合并）
+        effective = _tui_effective_config_for_station(config_path, config_state)
+        if effective:
+            config_state['port'] = config_state.get('port') or effective.get('serial_port')
+            config_state['baud_rate'] = config_state.get('baud_rate') or effective.get('baud_rate')
+            config_state['firmware'] = config_state.get('firmware') or effective.get('firmware_path')
+            config_state['monitor_baud'] = config_state.get('monitor_baud') or effective.get('monitor_baud')
+            config_state['version_string'] = config_state.get('version_string') or effective.get('version_string')
+            config_state['device_code_rule'] = config_state.get('device_code_rule') or effective.get('device_code_rule')
             # Load print_device_logs, print_esptool_logs, and print_debug_logs settings and update global variables
             global PRINT_DEVICE_LOGS, PRINT_ESPTOOL_LOGS, PRINT_DEBUG_LOGS
-            PRINT_DEVICE_LOGS = default_config.get('print_device_logs', True)
-            PRINT_ESPTOOL_LOGS = default_config.get('print_esptool_logs', True)
-            PRINT_DEBUG_LOGS = default_config.get('print_debug_logs', True)
+            PRINT_DEVICE_LOGS = effective.get('print_device_logs', True)
+            PRINT_ESPTOOL_LOGS = effective.get('print_esptool_logs', True)
+            PRINT_DEBUG_LOGS = effective.get('print_debug_logs', True)
     
     # Remember last selected action to restore selection when returning from operations
     last_selected_action = None
@@ -3233,8 +3256,8 @@ def menu_mode_main(config_state, mode_type):
     # 启动 TUI 底部服务器 ping 线程（仅一次，且仅在 server_upload 启用时设置 base_url）
     global _tui_ping_base_url, _tui_ping_thread_started
     try:
-        default_config = load_default_config(config_path)
-        cfg = (default_config or {}).get("server_upload", {})
+        effective = _tui_effective_config_for_station(config_path, config_state)
+        cfg = (effective or {}).get("server_upload", {})
         if cfg.get("enabled") and (cfg.get("base_url") or "").strip():
             base_url_raw = (cfg.get("base_url") or "").rstrip("/")
             port = 8001 if mode_type == "develop" else 8000
@@ -3267,6 +3290,7 @@ def menu_mode_main(config_state, mode_type):
             
             config_items = [
                 ("Serial Port", config_state.get('port', 'Not set')),
+                ("Station", config_state.get('station_id') or '-'),
                 ("Flash Baud Rate", config_state.get('baud_rate', 'Not set')),
                 ("Firmware", os.path.basename(config_state['firmware']) if config_state.get('firmware') else 'Not set'),
                 ("Monitor Baud Rate", config_state.get('monitor_baud', 'Not set')),
@@ -5219,7 +5243,7 @@ def _create_and_setup_flasher(config_state):
     Returns:
         ESPFlasher: 配置好的 flasher 实例
     """
-    flasher = ESPFlasher(config_state['config_path'])
+    flasher = ESPFlasher(config_state['config_path'], station_id=config_state.get('station_id'))
     flasher.config['serial_port'] = config_state['port']
     flasher.config['firmware_path'] = config_state['firmware']
     
@@ -7675,7 +7699,7 @@ def menu_start_flash(config_state):
     print_header("Step 2/4: Start Flashing", 80)
     
     # Create flasher instance (will create session_id automatically)
-    flasher = ESPFlasher(config_state['config_path'])
+    flasher = ESPFlasher(config_state['config_path'], station_id=config_state.get('station_id'))
     flasher.config['serial_port'] = config_state['port']
     flasher.config['firmware_path'] = config_state['firmware']
     
@@ -7953,6 +7977,19 @@ def main():
     
     # 如果指定了--tui，启动TUI
     if args.tui:
+        run_tui()
+        return
+
+    # --station 且无直烧/列口等参数时走 TUI（可配合 -m 直接进入对应模式菜单）
+    tui_batch_flags = any([args.port, args.firmware, args.list, args.no_verify, args.no_reset])
+    if args.station and not tui_batch_flags:
+        global _TUI_PRESET_MODE, _TUI_PRESET_STATION
+        _TUI_PRESET_MODE = args.mode
+        _TUI_PRESET_STATION = args.station
+        if not args.mode:
+            print("提示: 已指定 --station，进入 TUI 后请选择 Develop 或 Factory；工位在进入模式菜单时生效。")
+        else:
+            print(f"提示: 进入 TUI → {args.mode} 模式菜单（工位: {args.station}）。")
         run_tui()
         return
     

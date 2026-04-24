@@ -155,6 +155,10 @@ python flash_esp.py -c config/config_factory.json --station jig_a
 python flash_esp.py -c config/config_factory.json --station jig_b
 ```
 
+With the default repo layout, `-m develop` / `-m factory` load `config_develop.json` / `config_factory.json` in the **project root**; keep `station_profiles` in those files (or pass `-c` to a shared file under `config/`).
+
+**TUI:** `python flash_esp.py` still opens the menu. To pick a station in the UI flow, use e.g. `python flash_esp.py -m develop --station jig_a` (no `-p`/`-f`/`-l`/`--no-*`) — that starts the **TUI** and applies the `jig_a` overlay. Add `-p …` or other batch flags if you want **non-interactive** CLI execution instead.
+
 You can still use `-p` to override `serial_port` for that run.
 
 **Alternative:** two separate small JSON files if you prefer not to edit the shared file.
