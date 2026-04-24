@@ -41,6 +41,8 @@ After installation, you can use anywhere:
 - `flash_factory` - Production mode flashing (encrypted)
 - `help_bog` - Show help information
 
+The TUI depends on **inquirer** (listed in `requirements.txt`). If you run `python flash_esp.py` with the system interpreter and see a missing-`inquirer` message, activate the project `venv` first (`source venv/bin/activate`) or use `start_bog` so dependencies are installed.
+
 ## Environment Setup
 
 ### Using Virtual Environment (Recommended)

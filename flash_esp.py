@@ -3081,39 +3081,33 @@ def run_tui_once():
         try:
             import inquirer
         except ImportError:
-            print("\n" + "="*80)
-            print_centered("Error: inquirer library not installed", 80)
-            print("="*80)
-            print("\nAttempting to auto-install inquirer...")
-            try:
-                import subprocess
-                pip_cmd = [sys.executable, '-m', 'pip', 'install', 'inquirer']
-                result = subprocess.run(pip_cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0:
-                    print("✓ inquirer installed successfully!")
-                    try:
-                        import inquirer
-                        print("Starting TUI interface...\n")
-                    except ImportError:
-                        print("Please run the command again to start TUI interface")
-                        return
-                else:
-                    print("✗ Auto-installation failed")
-                    if result.stderr:
-                        print(result.stderr)
-                    print("\nPlease manually run: pip install inquirer")
-                    return
-            except Exception as e:
-                print(f"✗ Error during installation: {e}")
-                print("Please manually run: pip install inquirer")
-                return
+            _root = os.path.dirname(os.path.abspath(__file__))
+            _req = os.path.join(_root, "requirements.txt")
+            _in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+            print("\n" + "=" * 80)
+            print_centered("缺少 TUI 依赖：inquirer", 80)
+            print("=" * 80)
+            print(f"\n当前解释器: {sys.executable}")
+            print(f"是否在 venv 中: {'是' if _in_venv else '否（多为系统 Python，未装项目依赖）'}")
+            print("\n请在本项目目录安装依赖后再启动 TUI，例如：")
+            print(f"  cd {_root}")
+            print("  python3 -m venv venv")
+            print("  source venv/bin/activate    # Windows: venv\\Scripts\\activate")
+            if os.path.isfile(_req):
+                print("  pip install -r requirements.txt")
+            else:
+                print("  pip install inquirer")
+            print("\n若已创建 venv，请先执行: source venv/bin/activate ，再运行本程序。")
+            print("也可使用仓库内 setup_aliases.sh 的 start_bog / setup_bog。")
+            print("=" * 80 + "\n")
+            return
     
     # Check again
     try:
         if inquirer is None:
             import inquirer
     except ImportError:
-        print("Error: Unable to load inquirer library, please run: pip install inquirer")
+        print("Error: Unable to load inquirer library after install hint.")
         return
     
     # 去掉 inquirer 的 "[?] :" 行：当 message 为空时不渲染该行（已有 Please select... 提示）
