@@ -98,6 +98,8 @@ The TUI interface will guide you through:
 5. Select other options (skip verification, no reset, erase Flash, etc.)
 6. Confirm configuration and start flashing
 
+From the main menu you can open **Settings** to change serial port, baud rates, log verbosity, **server upload on/off**, hash timeout, etc. Upload toggle updates `server_upload.enabled` in the active mode config file immediately.
+
 ### Command Line Mode
 
 ```bash
@@ -199,6 +201,11 @@ Configuration files contain the following main items:
 - `secure_boot`: Whether to enable secure boot (`true`/`false`)
 - `monitor_baud`: Baud rate used for log monitoring during self-test
 - `device_code_rule`: Rule to generate serial number / device code when not manually entered (e.g., `SN: YYMMDD+序号`)
+- `server_upload`: Upload burn/self-test records to BOG test server (see [产测服务器](#产测服务器server-integration))
+  - `enabled`: `true` / `false` — whether to POST results after flash/self-test
+  - `base_url`: Server host URL (port is chosen by mode: develop **8001**, factory **8000**)
+  - `timeout_sec`: HTTP timeout (seconds)
+  - `computer_identity`: Optional PC label (often set per fixture under `station_profiles`)
 
 ## 产测服务器（Server Integration）
 
@@ -207,7 +214,24 @@ Configuration files contain the following main items:
 - **服务端项目**：[bog-test-server/](bog-test-server/)（FastAPI，SQLite，Dashboard）
 - **API 规范**：[bog-test-server/API_SPEC.md](bog-test-server/API_SPEC.md)（供其他工程/Agent 集成）
 
-客户端在 `config/config_develop.json` / `config/config_factory.json` 中配置 `server_upload.enabled` 与 `base_url` 即可启用上传。**端口约定**：开发模式映射调试环境 **8001**，生产模式映射生产环境 **8000**。
+启用上传需要 `server_upload.enabled` 为 `true`，并配置 `base_url`（示例见 `config/config_develop.json`）。
+
+**两种方式：**
+
+1. **TUI Settings（推荐）** — 主菜单 → **Settings** → **Server Upload**，回车即可开关（写入当前模式对应的 JSON 顶层 `server_upload.enabled`）。开启且已配置 `base_url` 时，主界面底部会显示服务器 ping 延迟。
+2. **直接改 JSON** — 编辑 `config/config_develop.json`（开发）或 `config/config_factory.json`（生产）：
+
+```json
+"server_upload": {
+  "enabled": true,
+  "base_url": "http://your-server-host:8001",
+  "timeout_sec": 10
+}
+```
+
+**端口约定**：客户端会按当前模式改写端口——开发模式 **8001**（调试环境），生产模式 **8000**（生产环境）；`base_url` 里只需写主机（可带任意端口，运行时会按模式替换）。
+
+工位配置（`station_profiles`）可与顶层 `server_upload` 深度合并，通常只在工位里覆盖 `computer_identity`；`enabled` 建议在 JSON 顶层或通过 Settings 切换。
 
 ## Directory Structure
 

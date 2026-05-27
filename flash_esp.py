@@ -935,6 +935,34 @@ def _tui_effective_config_for_station(config_path, config_state):
     return resolve_station_profiles_config(copy.deepcopy(raw), config_state.get('station_id'))
 
 
+def _sync_tui_ping_base_url(config_path, config_state, mode_type):
+    """按生效的 server_upload 配置更新 TUI 底部 ping 目标；必要时启动后台线程。"""
+    global _tui_ping_base_url, _tui_ping_thread_started
+    try:
+        effective = _tui_effective_config_for_station(config_path, config_state)
+        cfg = (effective or {}).get("server_upload", {})
+        if cfg.get("enabled") and (cfg.get("base_url") or "").strip():
+            base_url_raw = (cfg.get("base_url") or "").rstrip("/")
+            port = 8001 if mode_type == "develop" else 8000
+            try:
+                parsed = urlparse(base_url_raw)
+                host = parsed.hostname or (parsed.netloc.split(":")[0] if parsed.netloc else "")
+                if parsed.scheme and host:
+                    _tui_ping_base_url = f"{parsed.scheme}://{host}:{port}"
+                else:
+                    _tui_ping_base_url = base_url_raw
+            except Exception:
+                _tui_ping_base_url = base_url_raw
+            if not _tui_ping_thread_started:
+                _tui_ping_thread_started = True
+                t = threading.Thread(target=_tui_ping_worker, daemon=True)
+                t.start()
+        else:
+            _tui_ping_base_url = None
+    except Exception:
+        _tui_ping_base_url = None
+
+
 class ESPFlasher:
     """ESP烧录器类"""
     
@@ -3379,31 +3407,7 @@ def menu_mode_main(config_state, mode_type):
     # Remember last selected action to restore selection when returning from operations
     last_selected_action = None
     
-    # 启动 TUI 底部服务器 ping 线程（仅一次，且仅在 server_upload 启用时设置 base_url）
-    global _tui_ping_base_url, _tui_ping_thread_started
-    try:
-        effective = _tui_effective_config_for_station(config_path, config_state)
-        cfg = (effective or {}).get("server_upload", {})
-        if cfg.get("enabled") and (cfg.get("base_url") or "").strip():
-            base_url_raw = (cfg.get("base_url") or "").rstrip("/")
-            port = 8001 if mode_type == "develop" else 8000
-            try:
-                parsed = urlparse(base_url_raw)
-                host = parsed.hostname or (parsed.netloc.split(":")[0] if parsed.netloc else "")
-                if parsed.scheme and host:
-                    _tui_ping_base_url = f"{parsed.scheme}://{host}:{port}"
-                else:
-                    _tui_ping_base_url = base_url_raw
-            except Exception:
-                _tui_ping_base_url = base_url_raw
-            if not _tui_ping_thread_started:
-                _tui_ping_thread_started = True
-                t = threading.Thread(target=_tui_ping_worker, daemon=True)
-                t.start()
-        else:
-            _tui_ping_base_url = None
-    except Exception:
-        _tui_ping_base_url = None
+    _sync_tui_ping_base_url(config_path, config_state, mode_type)
     
     while True:
         try:
@@ -3636,6 +3640,30 @@ def toggle_print_setting(config_state, setting_key, global_var_name):
         return False, current_value
 
 
+def toggle_server_upload_enabled(config_state, mode_type):
+    """Toggle server_upload.enabled in config file (top-level) and refresh TUI ping target."""
+    config_path = config_state.get('config_path', PATH_CONFIG_DEVELOP)
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        su = config.setdefault('server_upload', {})
+        current_value = bool(su.get('enabled', False))
+        new_value = not current_value
+        su['enabled'] = new_value
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        _sync_tui_ping_base_url(config_path, config_state, mode_type)
+        return True, new_value
+    except Exception as e:
+        print(f"\n✗ Failed to save configuration: {e}")
+        try:
+            effective = _tui_effective_config_for_station(config_path, config_state)
+            current_value = bool((effective or {}).get('server_upload', {}).get('enabled', False))
+        except Exception:
+            current_value = False
+        return False, current_value
+
+
 def menu_settings(config_state, mode_type):
     """Settings menu"""
     last_selected = None  # Remember last selected setting item
@@ -3698,6 +3726,12 @@ def menu_settings(config_state, mode_type):
                     if current_print_debug_logs is None:
                         current_print_debug_logs = True
             
+            try:
+                effective = _tui_effective_config_for_station(config_path, config_state)
+                current_server_upload = bool((effective or {}).get('server_upload', {}).get('enabled', False))
+            except Exception:
+                current_server_upload = False
+            
             # Format firmware display (show filename only)
             firmware_display = 'Not set'
             if current_firmware:
@@ -3727,6 +3761,7 @@ def menu_settings(config_state, mode_type):
                 ("Print Device Logs", "✓ Enabled" if current_print_logs else "✗ Disabled"),
                 ("Print ESPTool Logs", "✓ Enabled" if current_print_esptool_logs else "✗ Disabled"),
                 ("Print Debug Logs", "✓ Enabled" if current_print_debug_logs else "✗ Disabled"),
+                ("Server Upload", "✓ Enabled" if current_server_upload else "✗ Disabled"),
                 ("Prompt Refresh Interval", f"{current_prompt_refresh_interval_ms} ms"),
                 ("Hash Verification Timeout", f"{current_hash_verification_timeout} s")
             ]
@@ -3748,6 +3783,7 @@ def menu_settings(config_state, mode_type):
                 (f'  📝  Print Device Logs [{"✓" if current_print_logs else "✗"}]', 'print_device_logs'),
                 (f'  🔧  Print ESPTool Logs [{"✓" if current_print_esptool_logs else "✗"}]', 'print_esptool_logs'),
                 (f'  🐛  Print Debug Logs [{"✓" if current_print_debug_logs else "✗"}]', 'print_debug_logs'),
+                (f'  ☁️  Server Upload [{"✓" if current_server_upload else "✗"}]', 'server_upload_enabled'),
                 (f'  ⏱️  Prompt Refresh Interval [{current_prompt_refresh_interval_ms} ms]', 'prompt_refresh_interval'),
                 (f'  ⏳  Hash Verification Timeout [{current_hash_verification_timeout} s]', 'hash_verification_timeout'),
                 ('  🔄  Reload Default Configuration', 'reload_defaults'),
@@ -3829,6 +3865,13 @@ def menu_settings(config_state, mode_type):
                     print(f"\n✓ Toggled to: {status}")
                     time.sleep(0.5)  # Brief pause to show the message
                 continue  # Continue to show menu with updated status
+            elif setting == 'server_upload_enabled':
+                success, new_value = toggle_server_upload_enabled(config_state, mode_type)
+                if success:
+                    status = "✓ Enabled" if new_value else "✗ Disabled"
+                    print(f"\n✓ Server upload toggled to: {status}")
+                    time.sleep(0.5)
+                continue
             elif setting == 'prompt_refresh_interval':
                 config_state = menu_set_prompt_refresh_interval(config_state)
                 save_config_to_file(config_state)
