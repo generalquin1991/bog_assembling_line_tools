@@ -1,8 +1,43 @@
 #!/bin/bash
 # ESP烧录工具 - 虚拟环境设置脚本
 
-echo "正在创建虚拟环境..."
-python3 -m venv venv
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
+find_bog_python() {
+    local candidates=(python3.13 python3.12 python3.11 python3.10 python3)
+    local py version major minor
+
+    for py in "${candidates[@]}"; do
+        if ! command -v "$py" >/dev/null 2>&1; then
+            continue
+        fi
+        version=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || continue
+        major=${version%%.*}
+        minor=${version#*.}
+        if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; }; then
+            echo "$py"
+            return 0
+        fi
+    done
+
+    echo "✗ 错误: 需要 Python 3.10 或更高版本（esptool 5.x 要求）" >&2
+    if command -v python3 >/dev/null 2>&1; then
+        echo "  当前 python3: $(python3 --version 2>&1)" >&2
+    fi
+    echo "  建议安装: brew install python@3.12" >&2
+    return 1
+}
+
+BOG_PYTHON=$(find_bog_python) || exit 1
+
+if [ -d "venv" ] && ! venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    echo "检测到旧虚拟环境（Python < 3.10），正在重建..."
+    rm -rf venv
+fi
+
+echo "正在创建虚拟环境（使用 $BOG_PYTHON）..."
+"$BOG_PYTHON" -m venv venv
 
 if [ $? -eq 0 ]; then
     echo "✓ 虚拟环境创建成功！"

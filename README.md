@@ -45,6 +45,8 @@ The TUI depends on **inquirer** (listed in `requirements.txt`). If you run `pyth
 
 ## Environment Setup
 
+**Requires Python 3.10+** (because `esptool==5.1.0` does not support Python 3.9). On macOS, the system `python3` is often 3.9 — install a newer interpreter if needed, e.g. `brew install python@3.12`. The setup scripts (`start_bog`, `setup_venv.sh`) automatically prefer `python3.12`, `python3.11`, or `python3.10` when available.
+
 ### Using Virtual Environment (Recommended)
 
 **Linux/Mac:**

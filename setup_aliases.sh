@@ -16,6 +16,58 @@ fi
 # 若 ~/.zshrc 里 source 的是另一个路径（例如 assembling_line_tools），
 # 则别名永远操作那个目录，不会自动指向 assembling_line_tools_recovered。
 
+# esptool 5.x 需要 Python >= 3.10；优先使用较新的解释器
+find_bog_python() {
+    local candidates=(python3.13 python3.12 python3.11 python3.10 python3)
+    local py version major minor
+
+    for py in "${candidates[@]}"; do
+        if ! command -v "$py" >/dev/null 2>&1; then
+            continue
+        fi
+        version=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || continue
+        major=${version%%.*}
+        minor=${version#*.}
+        if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; }; then
+            echo "$py"
+            return 0
+        fi
+    done
+
+    echo "✗ 错误: 需要 Python 3.10 或更高版本（esptool 5.x 要求）" >&2
+    if command -v python3 >/dev/null 2>&1; then
+        echo "  当前 python3: $(python3 --version 2>&1)" >&2
+    else
+        echo "  未找到 python3" >&2
+    fi
+    echo "  建议安装: brew install python@3.12" >&2
+    return 1
+}
+
+venv_python_ok() {
+    [ -x "venv/bin/python" ] && venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
+}
+
+ensure_bog_venv() {
+    local bog_python
+
+    bog_python=$(find_bog_python) || return 1
+
+    if [ -d "venv" ] && ! venv_python_ok; then
+        echo "检测到旧虚拟环境（Python < 3.10），正在重建..."
+        rm -rf venv
+    fi
+
+    if [ ! -d "venv" ]; then
+        echo "正在创建虚拟环境（使用 $bog_python）..."
+        "$bog_python" -m venv venv || {
+            echo "✗ 虚拟环境创建失败"
+            return 1
+        }
+        echo "✓ 虚拟环境创建成功！"
+    fi
+}
+
 # 设置虚拟环境的别名（自动创建并安装依赖）
 setup_bog() {
     cd "$SCRIPT_DIR" || return 1
@@ -31,14 +83,7 @@ setup_bog() {
         return 1
     fi
     
-    echo "正在创建虚拟环境..."
-    python3 -m venv venv
-    if [ $? -ne 0 ]; then
-        echo "✗ 虚拟环境创建失败"
-        return 1
-    fi
-    
-    echo "✓ 虚拟环境创建成功！"
+    ensure_bog_venv || return 1
     echo ""
     echo "正在安装依赖（esptool, pyserial等）..."
     
@@ -69,16 +114,11 @@ start_bog() {
         return 1
     fi
     
-    # 如果虚拟环境不存在，创建它
+    # 如果虚拟环境不存在或 Python 版本过低，创建/重建它
     if [ ! -d "venv" ]; then
         echo "虚拟环境不存在，正在创建..."
-        python3 -m venv venv
-        if [ $? -ne 0 ]; then
-            echo "✗ 虚拟环境创建失败"
-            return 1
-        fi
-        echo "✓ 虚拟环境创建成功！"
     fi
+    ensure_bog_venv || return 1
     
     # 激活虚拟环境
     source venv/bin/activate
